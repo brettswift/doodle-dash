@@ -45,6 +45,15 @@ class Room {
     this.say('sys', `${p.name} joined`);
     return { p };
   }
+  // Fallback reconnect: same room + same name + same trusted observed IP, only for a DISCONNECTED player.
+  // IP is not authentication; it only re-claims a slot nobody is using. Token is rotated.
+  rejoinByIp(name, ip) {
+    if (!ip) return null;
+    const p = this.players.find((q) => q.name.toLowerCase() === String(name).trim().toLowerCase());
+    if (!p || p.send || !p.ip || p.ip !== ip) return null;
+    p.token = crypto.randomBytes(16).toString('hex');
+    return p;
+  }
   resume(token) { return this.players.find((p) => p.token === token); }
   say(k, text, name) { this.chat.push({ k, name, text }); if (this.chat.length > 40) this.chat.shift(); return this.chat[this.chat.length - 1]; }
   sendAll(obj, except) { const s = JSON.stringify(obj); for (const p of this.connected) if (p !== except) p.send(s); }
