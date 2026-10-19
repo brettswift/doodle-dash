@@ -8,6 +8,7 @@ const { Game } = require('./game');
 const FILES = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/geom.js': ['geom.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
 };
 const MAX_MSG = 4096, MAX_PER_IP = 24;
@@ -28,6 +29,7 @@ function start(port) {
 
   const server = http.createServer((req, res) => {
     const url = (req.url || '').split('?')[0];
+    if (url === '/version') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ sha: process.env.GIT_SHA || 'dev' })); }
     if (url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
     const f = req.method === 'GET' || req.method === 'HEAD' ? pub[url] : null;
     if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }

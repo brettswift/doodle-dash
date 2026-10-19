@@ -5,10 +5,10 @@ const COLORS = ['#000000', '#e63946', '#f4a261', '#ffd23f', '#2a9d8f', '#1d90ff'
 const SIZES = [4, 10, 22];
 const KEY = 'doodle-dash-session';
 const NAMEKEY = 'doodle-dash-name';
-const EX = 800 / 1000;
 
 let ws = null, sess = null, st = null, recvAt = 0, retry = 0, wantOpen = false, pendingEnter = null;
 let strokes = [], tool = { c: COLORS[0], w: SIZES[1], eraser: false };
+const G = window.DDGeom;
 const cv = $('cv'), ctx = cv.getContext('2d');
 ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
@@ -98,7 +98,7 @@ function renderGame() {
   else hint.textContent = '';
   $('tools').hidden = !(st.phase === 'drawing' && isDrawer());
   const g = $('guessForm');
-  g.hidden = st.phase === 'gameOver';
+  g.hidden = st.phase === 'gameOver' || isDrawer();
   const can = st.phase === 'drawing' && !isDrawer() && !me().guessed;
   $('guess').disabled = !can; g.querySelector('button').disabled = !can;
   $('guess').placeholder = isDrawer() ? 'You are drawing!' : me().guessed ? 'You got it!' : 'Type your guess';
@@ -150,9 +150,11 @@ setInterval(() => {
 
 // ---------- canvas ----------
 function seg(a, b, c, w) {
-  ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = w * EX;
-  if (!b) { ctx.beginPath(); ctx.arc(a[0] * EX, a[1] * EX, w * EX / 2, 0, 7); ctx.fill(); return; }
-  ctx.beginPath(); ctx.moveTo(a[0] * EX, a[1] * EX); ctx.lineTo(b[0] * EX, b[1] * EX); ctx.stroke();
+  const k = G.lineScale(cv.width), A = G.toPixel(a, cv.width, cv.height);
+  ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = w * k;
+  if (!b) { ctx.beginPath(); ctx.arc(A[0], A[1], w * k / 2, 0, 7); ctx.fill(); return; }
+  const B = G.toPixel(b, cv.width, cv.height);
+  ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
 }
 function paintStroke(s) {
   const p = s.p;
@@ -175,8 +177,7 @@ function remoteDraw(m) {
 
 let drawing = null, buf = [], flushT = 0;
 function pos(e) {
-  const r = cv.getBoundingClientRect();
-  return [Math.max(0, Math.min(1000, Math.round((e.clientX - r.left) / r.width * 1000))), Math.max(0, Math.min(1000, Math.round((e.clientY - r.top) / r.height * 1000)))];
+  return G.toNorm(e.clientX, e.clientY, cv.getBoundingClientRect());
 }
 const curColor = () => (tool.eraser ? '#ffffff' : tool.c);
 function flush() {
@@ -264,5 +265,5 @@ try { $('name').value = localStorage.getItem(NAMEKEY) || ''; } catch {}
 const q = new URLSearchParams(location.search).get('room');
 if (q) $('code').value = q.toUpperCase().slice(0, 4);
 if (sess && !q) { show('home'); connect(); } else show('home');
-window.__dd = () => ({ st, strokes: strokes.length });
+window.__dd = () => ({ st, strokes: strokes.length, strokeData: strokes });
 })();
