@@ -103,7 +103,9 @@ test('word choices and word stay secret from guessers in every frame', async () 
   const all = await room(6);
   const { drawer, word, choices, guessers } = await begin(all);
   assert.equal(choices.length, 3);
-  assert.ok(choices.includes(word));
+  assert.ok(choices.map((c) => c.word).includes(word));
+  assert.deepEqual(choices.map((c) => c.diff), ['easy', 'medium', 'hard']);
+  assert.deepEqual(choices.map((c) => c.mult), [1, 1.5, 2]);
   for (const g of guessers) {
     assert.equal(g.state.word, undefined);
     assert.equal(g.state.choices, undefined);
@@ -113,7 +115,8 @@ test('word choices and word stay secret from guessers in every frame', async () 
   await guessers[0].wait((m) => m.t === 'draw');
   guessers[1].send({ t: 'guess', text: 'definitely-wrong' });
   await drawer.wait((m) => m.t === 'chat');
-  for (const g of guessers) for (const r of g.raw) for (const w of choices) assert.ok(!r.toLowerCase().includes(w.toLowerCase()), `leak of ${w} in ${r}`);
+  for (const g of guessers) for (const r of g.raw) for (const { word: w } of choices) assert.ok(!r.toLowerCase().includes(w.toLowerCase()), `leak of ${w} in ${r}`);
+  for (const g of guessers) for (const r of g.raw) assert.ok(!/"(diff|mult)"/.test(r.replace(/"diff":null/g, '')), 'difficulty leaked to guesser');
   all.forEach((c) => c.close());
 });
 
@@ -199,33 +202,54 @@ test('reconnect resyncs drawer and guesser; late join gets strokes', async () =>
   [late, bad, d2, g2, ...all].forEach((c) => c.close());
 });
 
-test('full 8-player game: everyone draws once, results, play again', async () => {
-  process.env.DRAW_MS = '1500';
-  const all = await room(8);
-  all[0].send({ t: 'start' });
-  const drawn = new Set();
-  for (let r = 0; r < 8; r++) {
-    const st = await all[0].next((m) => m.t === 'state' && m.phase === 'choosing', 3000).catch(() => all[0].state);
-    const drawer = byId(all, st.drawerId);
-    assert.ok(!drawn.has(drawer.id), 'drawer repeated');
-    drawn.add(drawer.id);
-    await drawer.wait((m) => m.t === 'state' && m.phase === 'choosing' && m.choices && m.drawerId === drawer.id);
-    drawer.send({ t: 'pick', i: 1 });
-    const dw = await drawer.next((m) => m.t === 'state' && m.phase === 'drawing' && m.word);
+async function playGame(all, rotations) {
+  // returns [{rotation, drawer}] per turn; drawer picks by cycling difficulty, all others guess the real word
+  const host = all[0];
+  let cursor = host.msgs.length; const turns = [];
+  host.send({ t: 'start' });
+  for (;;) {
+    const m = await host.wait((x) => host.msgs.indexOf(x) >= cursor && x.t === 'state' && (x.phase === 'choosing' || x.phase === 'gameOver'), 5000);
+    cursor = host.msgs.indexOf(m) + 1;
+    if (m.phase === 'gameOver') return { turns, over: m };
+    const drawer = byId(all, m.drawerId);
+    turns.push({ rotation: m.rotation, drawer: drawer.id, turn: m.turn, turns: m.turns });
+    const ch = await drawer.wait((x) => x.t === 'state' && x.phase === 'choosing' && x.choices && x.drawerId === drawer.id && x.turn === m.turn);
+    drawer.send({ t: 'pick', i: turns.length % 3 });
+    const dw = await drawer.next((x) => x.t === 'state' && x.phase === 'drawing' && x.word);
+    assert.equal(dw.diff, ch.choices[turns.length % 3].diff);
     for (const c of all) if (c !== drawer) c.send({ t: 'guess', text: dw.word });
-    await all[0].next((m) => m.t === 'state' && (m.phase === 'roundEnd' || m.phase === 'gameOver'), 3000).catch(() => {});
+    const end = await host.next((x) => x.t === 'state' && x.phase === 'roundEnd', 4000);
+    assert.equal(end.diff, dw.diff); assert.equal(end.turn, m.turn);
+    assert.ok(end.players.every((p) => p.id === drawer.id || p.gain > 0));
+    cursor = host.msgs.length;
   }
-  const over = await all[3].phase('gameOver', 3000);
-  assert.equal(drawn.size, 8);
-  assert.equal(over.players.length, 8);
-  all[1].send({ t: 'again' });
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(all[0].state.phase, 'gameOver');
-  all[0].send({ t: 'again' });
-  const lob = await all[5].phase('lobby');
-  assert.ok(lob.players.every((p) => p.score === 0));
-  all.forEach((c) => c.close());
-});
+}
+for (const [n, rot] of [[4, undefined], [5, 2], [8, 2]]) {
+  test(`${n} clients: ${rot ?? 'default 5'} full rotations, each player draws once per rotation, play again`, async () => {
+    process.env.DRAW_MS = '1500'; process.env.RESULT_MS = '900'; // result pause >= guess limiter refill (1/s)
+    const all = await room(n);
+    process.env.RESULT_MS = '300';
+    if (rot) { all[0].send({ t: 'rounds', n: rot }); await all[0].wait((m) => m.t === 'state' && m.rotations === rot); }
+    else assert.equal(all[0].state.rotations, 5);
+    const total = (rot ?? 5) * n;
+    const { turns, over } = await playGame(all, rot ?? 5);
+    assert.equal(turns.length, total);
+    for (let r = 1; r <= (rot ?? 5); r++) {
+      const ids = turns.filter((t) => t.rotation === r).map((t) => t.drawer);
+      assert.equal(ids.length, n); assert.equal(new Set(ids).size, n, `rotation ${r} repeated a drawer`);
+    }
+    assert.ok(turns.every((t, i) => t.turn === i + 1 && t.turns === total));
+    assert.equal(over.players.length, n);
+    all[1].send({ t: 'again' });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(all[0].state.phase, 'gameOver');
+    all[0].send({ t: 'again' });
+    const lob = await all[n - 1].phase('lobby');
+    assert.ok(lob.players.every((p) => p.score === 0));
+    assert.equal(lob.rotations, rot ?? 5, 'setting survives play again');
+    all.forEach((c) => c.close());
+  });
+}
 
 test('abuse: oversized frames closed, bad json ignored, floods rate limited, no static traversal', async () => {
   const c = await new C('a').open();

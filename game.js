@@ -1,6 +1,9 @@
 'use strict';
 const crypto = require('node:crypto');
-const WORDS = require('./words');
+const { TIERS, MULT10, DIFFS } = require('./words');
+const DEFAULT_ROTATIONS = 5, MIN_ROTATIONS = 1, MAX_ROTATIONS = 10;
+// Points: base time-decay points times the difficulty multiplier (tenths), rounded half up to an integer.
+const scaled = (base, diff) => Math.round(base * MULT10[diff] / 10);
 
 const COLORS = new Set(['#000000', '#e63946', '#f4a261', '#ffd23f', '#2a9d8f', '#1d90ff', '#7b2cbf', '#8d5524', '#ffffff']);
 const MAX_PLAYERS = 8, MIN_PLAYERS = 2;
@@ -19,13 +22,13 @@ class Room {
       result: +process.env.RESULT_MS || 6000,
       grace: +process.env.GRACE_MS || 12000,
     };
-    this.players = []; this.hostId = null;
+    this.players = []; this.hostId = null; this.rotations = DEFAULT_ROTATIONS;
     this.phase = 'lobby'; this.chat = [];
     this.touched = now;
     this.resetGame();
   }
   resetGame() {
-    this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.used = new Set();
+    this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.rotation = 0; this.rotSize = 0; this.diff = null; this.used = new Set();
     this.drawerId = null; this.word = null; this.choices = null; this.strokes = []; this.pts = 0;
     this.deadline = 0; this.drawerGone = 0;
     for (const p of this.players) { p.score = 0; p.gain = 0; p.guessed = false; }
@@ -40,7 +43,7 @@ class Room {
     const p = { id: crypto.randomBytes(4).toString('hex'), token: crypto.randomBytes(16).toString('hex'), name: name.trim(), score: 0, gain: 0, guessed: false, send: null };
     this.players.push(p);
     if (!this.hostId) this.hostId = p.id;
-    if (this.phase !== 'lobby' && this.phase !== 'gameOver') this.queue.push(p.id);
+    if (this.phase !== 'lobby' && this.phase !== 'gameOver') { this.queue.push(p.id); this.rotSize++; }
     this.touched = now;
     this.say('sys', `${p.name} joined`);
     return { p };
@@ -75,15 +78,23 @@ class Room {
     const showWord = this.phase === 'roundEnd' || this.phase === 'gameOver' || (you && this.phase === 'drawing');
     const v = {
       t: 'state', code: this.code, you: p.id, hostId: this.hostId, phase: this.phase,
-      drawerId: this.drawerId, round: this.drawn + (this.phase === 'lobby' || this.phase === 'gameOver' ? 0 : 1),
-      rounds: this.drawn + this.queue.length + (this.phase === 'choosing' || this.phase === 'drawing' ? 1 : 0),
+      drawerId: this.drawerId, rotations: this.rotations, rotation: this.rotation,
       remaining: Math.max(0, this.deadline - this.now()),
       players: this.players.map((q) => ({ id: q.id, name: q.name, score: q.score, gain: q.gain, guessed: q.guessed, connected: !!q.send })),
       chat: this.chat,
     };
+    // A rotation = every player draws once. turn* counts single drawer turns over the whole game.
+    const live = this.phase === 'choosing' || this.phase === 'drawing';
+    if (this.phase !== 'lobby') {
+      v.turn = this.drawn + (live ? 1 : 0);
+      v.turns = v.turn + this.queue.length + Math.max(0, this.rotations - this.rotation) * this.players.length;
+      v.rotTurn = this.rotSize - this.queue.length; v.rotTurns = this.rotSize;
+    }
     if (withStrokes) v.strokes = this.strokes;
-    if (this.phase === 'choosing' && you) v.choices = this.choices;
+    if (this.phase === 'choosing' && you) v.choices = this.choices.map((c) => ({ word: c.word, diff: c.diff, mult: MULT10[c.diff] / 10 }));
     if (showWord && this.word) v.word = this.word;
+    // difficulty is shown to the drawer while drawing and to everyone only once the word is revealed
+    if (this.diff && (showWord)) { v.diff = this.diff; v.mult = MULT10[this.diff] / 10; }
     if (this.word && this.phase === 'drawing' && !you) v.len = this.word.length;
     return v;
   }
@@ -98,9 +109,16 @@ class Room {
         if (this.phase !== 'lobby') return err('Already started');
         if (this.connected.length < MIN_PLAYERS) return err('Need at least 2 players');
         this.players = this.players.filter((q) => q.send);
-        this.queue = this.players.map((q) => q.id);
+        this.queue = []; this.rotation = 0; this.rotSize = 0;
         this.chat = [];
         return this.nextRound(now);
+      }
+      case 'rounds': {
+        if (p.id !== this.hostId) return err('Only the host can change rounds');
+        if (this.phase !== 'lobby') return err('Rounds can only change in the lobby');
+        if (!Number.isInteger(m.n) || m.n < MIN_ROTATIONS || m.n > MAX_ROTATIONS) return err(`Rounds must be a whole number ${MIN_ROTATIONS}-${MAX_ROTATIONS}`);
+        this.rotations = m.n;
+        return this.broadcastState(false);
       }
       case 'again': {
         if (p.id !== this.hostId) return err('Only the host can restart');
@@ -112,7 +130,7 @@ class Room {
       }
       case 'pick': {
         if (this.phase !== 'choosing' || p.id !== this.drawerId) return err('Not your choice');
-        const w = this.choices[m.i];
+        const w = Number.isInteger(m.i) && this.choices[m.i];
         if (!w) return err('Bad choice');
         return this.beginDrawing(w, now);
       }
@@ -127,18 +145,27 @@ class Room {
   }
 
   nextRound(now) {
-    this.queue = this.queue.filter((id) => this.players.find((p) => p.id === id)?.send);
-    if (!this.queue.length) return this.gameOver();
+    // Turn order: a rotation lists every player once. A player offline when their turn comes loses that
+    // turn (never stalls the game); they draw again next rotation. Late joiners draw at the end of the current one.
+    for (;;) {
+      while (this.queue.length && !this.players.find((p) => p.id === this.queue[0])?.send) this.queue.shift();
+      if (this.queue.length) break;
+      if (this.rotation >= this.rotations || !this.connected.length) return this.gameOver();
+      this.rotation++; this.queue = this.players.map((q) => q.id); this.rotSize = this.queue.length;
+      if (this.rotation > 1) this.say('sys', `Round ${this.rotation} of ${this.rotations}`);
+    }
     this.drawerId = this.queue.shift();
-    const fresh = WORDS.filter((w) => !this.used.has(w));
-    this.choices = pickN(fresh.length >= 3 ? fresh : WORDS, 3);
-    this.word = null; this.strokes = []; this.pts = 0; this.drawerGone = 0;
+    this.choices = DIFFS.map((d) => {
+      const fresh = TIERS[d].filter((w) => !this.used.has(w));
+      return { word: pickN(fresh.length ? fresh : TIERS[d], 1)[0], diff: d };
+    });
+    this.word = null; this.diff = null; this.strokes = []; this.pts = 0; this.drawerGone = 0;
     for (const p of this.players) { p.guessed = false; p.gain = 0; }
     this.phase = 'choosing'; this.deadline = now + this.cfg.choose;
     this.broadcastState();
   }
-  beginDrawing(w, now) {
-    this.word = w; this.used.add(w); this.choices = null;
+  beginDrawing(c, now) {
+    this.word = c.word; this.diff = c.diff; this.used.add(c.word); this.choices = null;
     this.phase = 'drawing'; this.deadline = now + this.cfg.draw;
     this.broadcastState();
   }
@@ -179,9 +206,9 @@ class Room {
     if (norm(text) === norm(this.word)) {
       p.guessed = true;
       const left = Math.max(0, this.deadline - now);
-      const gain = 50 + Math.round(150 * left / this.cfg.draw);
+      const gain = scaled(50 + Math.round(150 * left / this.cfg.draw), this.diff);
       p.gain = gain; p.score += gain;
-      const d = this.drawer(); if (d) { d.score += 25; d.gain += 25; }
+      const d = this.drawer(); if (d) { const dg = scaled(25, this.diff); d.score += dg; d.gain += dg; }
       this.sendAll({ t: 'chat', m: this.say('ok', `${p.name} guessed it!`) });
       const guessers = this.connected.filter((q) => q.id !== this.drawerId);
       if (guessers.length && guessers.every((q) => q.guessed)) return this.endRound(now, 'everyone guessed');
@@ -214,4 +241,4 @@ class Game {
     }
   }
 }
-module.exports = { Game, MAX_PLAYERS };
+module.exports = { Game, MAX_PLAYERS, DEFAULT_ROTATIONS, MIN_ROTATIONS, MAX_ROTATIONS, scaled };

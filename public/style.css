@@ -20,7 +20,7 @@ button.primary{background:var(--accent);border-color:var(--accent-d);color:var(-
 button.primary:active:not(:disabled){background:var(--accent-d);box-shadow:0 1px 0 #000;transform:translateY(2px)}
 button.link{border:0;background:none;color:var(--muted);text-decoration:underline;font-weight:600}
 button[aria-pressed=true]{background:var(--blue);border-color:var(--blue);color:#0d1530}
-input{width:100%;min-height:var(--tap);padding:0 12px;border:2px solid var(--edge);border-radius:12px;background:#0f0d18;font-size:16px}
+input,select{width:100%;min-height:var(--tap);padding:0 12px;border:2px solid var(--edge);border-radius:12px;background:#0f0d18;font-size:16px}
 label{display:block;font-weight:700;font-size:14px;color:var(--ink2);margin:16px 0 12px}
 label input{margin-top:6px;font-weight:500}
 h1{margin:0;font-size:40px;line-height:1;letter-spacing:-.03em}
@@ -128,3 +128,14 @@ aside{display:flex;flex-direction:column;gap:10px;min-width:0}
 
 input::placeholder{color:var(--muted);opacity:1}
 .sw[aria-pressed=true]{outline-color:var(--ink)}
+
+/* rounds + word choice */
+.rounds{display:block;margin-top:8px}
+.rounds select{width:100%;margin-top:6px;color:var(--ink)}
+.small{font-size:13px}
+#overlay .words{width:100%}
+#overlay .words button.pick{flex:1 1 150px;max-width:100%;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:64px;padding:8px 10px;border:2px solid var(--edge)}
+.pick .w{font-size:18px;font-weight:800;overflow-wrap:anywhere}
+.pick .d{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+.pick .p{font-size:12px;font-weight:600;color:var(--muted)}
+.pick.easy .d{color:#6fdc8c}.pick.medium .d{color:#ffd23f}.pick.hard .d{color:#ff7a8a}

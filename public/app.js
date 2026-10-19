@@ -77,11 +77,21 @@ function el(tag, props, ...kids) {
   return e;
 }
 
+const DIFF_LABEL = { easy: 'Easy', medium: 'Medium', hard: 'Hard' };
+const fmtMult = (m) => '×' + m;
+const pts = (base, m) => Math.round(base * m);
+const turnText = () => `Round ${st.rotation}/${st.rotations} · Turn ${st.rotTurn}/${st.rotTurns}`;
+const rsel = $('rounds');
+for (let i = 1; i <= 10; i++) rsel.append(el('option', { value: i, textContent: i + (i === 1 ? ' round' : ' rounds') }));
+rsel.onchange = () => send({ t: 'rounds', n: +rsel.value });
+
 function renderLobby() {
   $('lobbyCode').textContent = st.code;
   const ul = $('lobbyPlayers'); ul.replaceChildren();
   for (const p of st.players) ul.append(el('li', { className: p.connected ? '' : 'off', textContent: p.name + (p.id === st.hostId ? ' ★' : '') }));
   const host = st.you === st.hostId;
+  rsel.disabled = !host; rsel.value = st.rotations;
+  $('roundsHelp').textContent = `A round = every player draws once (${st.players.length} turn${st.players.length === 1 ? '' : 's'} now). ${st.rotations} round${st.rotations === 1 ? '' : 's'} = ${st.rotations * st.players.length} turns. ${host ? '' : 'Only the host changes this.'}`;
   $('start').hidden = !host;
   $('start').disabled = st.players.filter((p) => p.connected).length < 2;
   $('lobbyHint').textContent = host
@@ -91,7 +101,7 @@ function renderLobby() {
 
 function renderGame() {
   const drawer = st.players.find((p) => p.id === st.drawerId);
-  $('roundInfo').textContent = st.phase === 'gameOver' ? 'Final' : `Round ${st.round}/${st.rounds}`;
+  $('roundInfo').textContent = st.phase === 'gameOver' ? 'Final' : `${turnText()}`;
   const hint = $('hint');
   if (st.word && (isDrawer() || st.phase !== 'drawing')) hint.textContent = st.word.toUpperCase();
   else if (st.phase === 'drawing' && st.len) hint.textContent = Array(st.len).fill('_').join(' ');
@@ -120,12 +130,17 @@ function renderOverlay(drawer) {
     if (isDrawer()) {
       o.append(el('h2', { textContent: 'Pick a word to draw' }));
       const w = el('div', { className: 'words' });
-      (st.choices || []).forEach((c, i) => w.append(el('button', { textContent: c, onclick: () => send({ t: 'pick', i }) })));
+      (st.choices || []).forEach((c, i) => w.append(el('button', { className: 'pick ' + c.diff, onclick: () => send({ t: 'pick', i }) },
+        el('span', { className: 'w', textContent: c.word }),
+        el('span', { className: 'd', textContent: `${DIFF_LABEL[c.diff]} ${fmtMult(c.mult)}` }),
+        el('span', { className: 'p', textContent: `guess ${pts(50, c.mult)}–${pts(200, c.mult)} · you ${pts(25, c.mult)}/guess` }))));
       o.append(w);
     } else o.append(el('h2', { textContent: `${drawer.name} is choosing a word…` }));
   } else if (st.phase === 'roundEnd' || st.phase === 'gameOver') {
     const over = st.phase === 'gameOver';
     o.append(el('h2', { textContent: over ? 'Game over' : st.word ? `It was “${st.word}”` : 'Round skipped' }));
+    if (!over) o.append(el('p', { className: 'sub small', textContent: `${turnText()} · ${drawer ? drawer.name : '?'} drew${st.diff ? ` · ${DIFF_LABEL[st.diff]} ${fmtMult(st.mult)}` : ''}` }));
+    else o.append(el('p', { className: 'sub small', textContent: `${st.rotations} round${st.rotations === 1 ? '' : 's'} · ${st.turn} turns played` }));
     const ol = el('ol');
     [...st.players].sort((a, z) => z.score - a.score).forEach((p, i) =>
       ol.append(el('li', {}, el('span', { textContent: `${over ? i + 1 + '. ' : ''}${p.name}` }), el('b', { textContent: p.score + (!over && p.gain ? ` (+${p.gain})` : '') }))));
