@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { accept } = require('./ws');
 const { Game } = require('./game');
+const { TOPICS } = require('./words');
 
 const FILES = {
   '/': ['index.html', 'text/html; charset=utf-8'],
@@ -47,13 +48,17 @@ function start(port, opts = {}) {
   const trustProxy = opts.trustProxy !== false;
   const pub = {};
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
-  const game = new Game();
+  const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
   const socks = new Set();
 
   const server = http.createServer((req, res) => {
     const url = (req.url || '').split('?')[0];
     if (url === '/version') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ sha: process.env.GIT_SHA || 'dev' })); }
+    if (url === '/stats') { // public, aggregate and anonymous: no tokens, names, room codes or per-drawing data
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ topics: TOPICS.length, tiers: game.ctx.topics.counts(), history: game.ctx.history.stats(), selection: game.ctx.topics.stats }));
+    }
     if (url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
     const f = req.method === 'GET' || req.method === 'HEAD' ? pub[url] : null;
     if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }
@@ -140,12 +145,16 @@ function start(port, opts = {}) {
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
       port: server.address().port, game,
-      close: () => { clearInterval(timer); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      close: () => { clearInterval(timer); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }
 
 module.exports = { start, clientIp };
 if (require.main === module) {
-  start(+process.env.PORT || 8080).then((s) => console.log('doodle-dash listening on', s.port));
+  start(+process.env.PORT || 8080).then((s) => {
+    console.log('doodle-dash listening on', s.port, process.env.DATA_DIR ? `data=${process.env.DATA_DIR}` : '(no DATA_DIR: history not persisted)');
+    const stop = () => { s.close(); setTimeout(() => process.exit(0), 200); };
+    process.on('SIGTERM', stop); process.on('SIGINT', stop);
+  });
 }

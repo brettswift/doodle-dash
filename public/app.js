@@ -104,7 +104,7 @@ function renderGame() {
   $('roundInfo').textContent = st.phase === 'gameOver' ? 'Final' : `${turnText()}`;
   const hint = $('hint');
   if (st.word && (isDrawer() || st.phase !== 'drawing')) hint.textContent = st.word.toUpperCase();
-  else if (st.phase === 'drawing' && st.len) hint.textContent = Array(st.len).fill('_').join(' ');
+  else if (st.phase === 'drawing' && st.len) hint.textContent = (st.lens || [st.len]).map((n) => Array(n).fill('_').join(' ')).join('   ');
   else hint.textContent = '';
   $('tools').hidden = !(st.phase === 'drawing' && isDrawer());
   const g = $('guessForm');

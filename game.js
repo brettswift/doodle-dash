@@ -1,6 +1,9 @@
 'use strict';
 const crypto = require('node:crypto');
-const { TIERS, MULT10, DIFFS } = require('./words');
+const { MULT10 } = require('./words');
+const { History } = require('./history');
+const { Topics } = require('./topics');
+const adapt = require('./adapt');
 const DEFAULT_ROTATIONS = 5, MIN_ROTATIONS = 1, MAX_ROTATIONS = 10;
 // Points: base time-decay points times the difficulty multiplier (tenths), rounded half up to an integer.
 const scaled = (base, diff) => Math.round(base * MULT10[diff] / 10);
@@ -11,11 +14,15 @@ const MAX_STROKES = 400, MAX_STROKE_PTS = 4000, MAX_TOTAL_PTS = 40000, MAX_CHUNK
 const NAME_RE = /^[A-Za-z0-9 _.-]{1,14}$/;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-const pickN = (arr, n) => { const a = [...arr]; const out = []; while (out.length < n && a.length) out.push(a.splice(crypto.randomInt(a.length), 1)[0]); return out; };
+const OUTCOME = { 'time up': 'timeup', 'everyone guessed': 'all', 'drawer left': 'drawerLeft' };
+const makeCtx = (opts = {}) => {
+  const history = new History({ dir: opts.dataDir || null, log: opts.log });
+  return { history, topics: new Topics(history), adapt };
+};
 
 class Room {
-  constructor(code, now) {
-    this.code = code;
+  constructor(code, now, ctx) {
+    this.code = code; this.ctx = ctx || makeCtx(); this.rec = null;
     this.cfg = {
       choose: +process.env.CHOOSE_MS || 15000,
       draw: +process.env.DRAW_MS || 80000,
@@ -28,7 +35,7 @@ class Room {
     this.resetGame();
   }
   resetGame() {
-    this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.rotation = 0; this.rotSize = 0; this.diff = null; this.used = new Set();
+    this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.rotation = 0; this.rotSize = 0; this.diff = null; this.gid = crypto.randomBytes(4).toString('hex');
     this.drawerId = null; this.word = null; this.choices = null; this.strokes = []; this.pts = 0;
     this.deadline = 0; this.drawerGone = 0;
     for (const p of this.players) { p.score = 0; p.gain = 0; p.guessed = false; }
@@ -69,6 +76,10 @@ class Room {
   }
   detach(p, now) {
     p.send = null; this.touched = now;
+    if (this.rec && this.phase === 'drawing') {
+      if (p.id === this.drawerId) this.rec.dd = true;
+      else if (!p.guessed) this.rec.el.delete(p.id);
+    }
     if (p.id === this.drawerId && ['choosing', 'drawing'].includes(this.phase)) this.drawerGone = now;
     this.broadcastState(false);
   }
@@ -85,6 +96,7 @@ class Room {
     };
     // A rotation = every player draws once. turn* counts single drawer turns over the whole game.
     const live = this.phase === 'choosing' || this.phase === 'drawing';
+    if (this.word && this.phase === 'drawing' && !you) v.lens = this.word.split(' ').map((s) => s.length);
     if (this.phase !== 'lobby') {
       v.turn = this.drawn + (live ? 1 : 0);
       v.turns = v.turn + this.queue.length + Math.max(0, this.rotations - this.rotation) * this.players.length;
@@ -155,28 +167,40 @@ class Room {
       if (this.rotation > 1) this.say('sys', `Round ${this.rotation} of ${this.rotations}`);
     }
     this.drawerId = this.queue.shift();
-    this.choices = DIFFS.map((d) => {
-      const fresh = TIERS[d].filter((w) => !this.used.has(w));
-      return { word: pickN(fresh.length ? fresh : TIERS[d], 1)[0], diff: d };
-    });
+    this.choices = this.ctx.topics.offer(this.code);
     this.word = null; this.diff = null; this.strokes = []; this.pts = 0; this.drawerGone = 0;
     for (const p of this.players) { p.guessed = false; p.gain = 0; }
     this.phase = 'choosing'; this.deadline = now + this.cfg.choose;
     this.broadcastState();
   }
   beginDrawing(c, now) {
-    this.word = c.word; this.diff = c.diff; this.used.add(c.word); this.choices = null;
+    this.word = c.word; this.diff = c.diff; this.choices = null;
+    // Only the chosen topic is recorded; unchosen offers were merely held and are released here.
+    this.ctx.topics.commit(this.code, c.id);
+    const el = this.connected.filter((q) => q.id !== this.drawerId).map((q) => q.id);
+    const seq = this.ctx.history.start({ tid: c.id, d: c.diff, m: MULT10[c.diff], g: this.gid, t0: now, el0: el.length, budget: this.cfg.draw });
+    this.rec = { seq, tid: c.id, el: new Set(el), el0: el.length, t0: now, gt: [], ink: false, dd: false };
     this.phase = 'drawing'; this.deadline = now + this.cfg.draw;
     this.broadcastState();
   }
   endRound(now, why) {
     if (!['choosing', 'drawing'].includes(this.phase)) return;
+    this.finishRec(now, OUTCOME[why] || 'abandoned');
+    this.ctx.topics.release(this.code);
     this.phase = 'roundEnd'; this.deadline = now + this.cfg.result; this.drawn++;
     if (!this.word && this.choices) this.word = null;
     this.choices = null;
     this.say('sys', this.word ? `The word was ${this.word}${why ? ' (' + why + ')' : ''}` : `Round skipped${why ? ' (' + why + ')' : ''}`);
     this.broadcastState();
   }
+  // Anonymous per-drawing telemetry: no names/ids/IPs; times are ms since the drawing began.
+  finishRec(now, out) {
+    const r = this.rec; if (!r) return; this.rec = null;
+    this.ctx.history.end(r.seq, { out, t1: now, dur: now - r.t0, ok: r.gt.length, gt: r.gt, el1: r.el.size, ink: r.ink, dd: r.dd });
+    this.ctx.adapt.consider(this.ctx.history, this.ctx.topics, r.tid, now);
+  }
+  // room torn down or server stopping mid-turn
+  abort(now) { this.finishRec(now, 'abandoned'); this.ctx.topics.release(this.code); }
   gameOver() { this.phase = 'gameOver'; this.deadline = 0; this.word = this.word; this.broadcastState(); }
 
   draw(p, m, err) {
@@ -194,7 +218,7 @@ class Room {
       if (!st || st.c !== m.c || st.w !== m.w) return;
     }
     if (st.p.length + pts.length > MAX_STROKE_PTS * 2 || this.pts + pts.length > MAX_TOTAL_PTS * 2) return err('Canvas full - clear it');
-    st.p.push(...pts); this.pts += pts.length;
+    st.p.push(...pts); this.pts += pts.length; if (this.rec) this.rec.ink = true;
     this.sendAll({ t: 'draw', s: !!m.s, c: m.c, w: m.w, p: pts }, p);
   }
 
@@ -205,6 +229,7 @@ class Room {
     if (!text) return;
     if (norm(text) === norm(this.word)) {
       p.guessed = true;
+      if (this.rec && this.rec.el.has(p.id)) this.rec.gt.push(now - this.rec.t0);
       const left = Math.max(0, this.deadline - now);
       const gain = scaled(50 + Math.round(150 * left / this.cfg.draw), this.diff);
       p.gain = gain; p.score += gain;
@@ -226,18 +251,20 @@ class Room {
 }
 
 class Game {
-  constructor() { this.rooms = new Map(); }
+  constructor(opts = {}) { this.rooms = new Map(); this.ctx = makeCtx(opts); }
+  // graceful stop: close in-flight drawings as abandoned and persist state
+  shutdown(now = Date.now()) { for (const r of this.rooms.values()) r.abort(now); this.ctx.history.close(); }
   create(now) {
     if (this.rooms.size >= 100) return null;
     let code;
     do { code = Array.from({ length: 4 }, () => CODE_CHARS[crypto.randomInt(CODE_CHARS.length)]).join(''); } while (this.rooms.has(code));
-    const r = new Room(code, now); this.rooms.set(code, r); return r;
+    const r = new Room(code, now, this.ctx); this.rooms.set(code, r); return r;
   }
   get(code) { return this.rooms.get(String(code || '').toUpperCase()); }
   tick(now) {
     for (const [c, r] of this.rooms) {
       r.tick(now);
-      if (!r.connected.length && now - r.touched > 10 * 60 * 1000) this.rooms.delete(c);
+      if (!r.connected.length && now - r.touched > 10 * 60 * 1000) { r.abort(now); this.rooms.delete(c); }
     }
   }
 }
