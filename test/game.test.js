@@ -271,3 +271,35 @@ test('abuse: oversized frames closed, bad json ignored, floods rate limited, no 
   assert.equal(idx.status, 200);
   assert.match(await idx.text(), /Doodle Dash/);
 });
+
+test('drawer gets a difficulty-scaled bonus when everyone guesses; none when a guesser misses or only one guesses', async () => {
+  const all = await room(4);
+  const { drawer, word, guessers } = await begin(all);
+  const mid = guessers.slice(0, 2);
+  mid[0].send({ t: 'guess', text: word });
+  const partial = await drawer.wait((m) => m.t === 'state' && m.players.some((p) => p.guessed));
+  const perGuess = partial.players.find((p) => p.id === drawer.id).gain;
+  assert.ok(!partial.chat.some((m) => /Everyone got it/.test(m.text)), 'no bonus yet');
+  for (const g of guessers.slice(1)) g.send({ t: 'guess', text: word });
+  const end = await guessers[1].phase('roundEnd');
+  const bonusMsg = end.chat.find((m) => /Everyone got it/.test(m.text));
+  assert.ok(bonusMsg, 'bonus announced');
+  const dGain = end.players.find((p) => p.id === drawer.id).gain;
+  const bonus = Number(/\+(\d+)$/.exec(bonusMsg.text)[1]);
+  assert.ok(bonus >= 100 && bonus <= 200, `bonus ${bonus} within easy..hard scale`);
+  assert.ok(dGain >= bonus + perGuess, 'drawer gain includes the bonus plus per-guess points');
+  all.forEach((c) => c.close());
+});
+
+test('word storm: wrong guesses are cleared at the start of each drawing round', async () => {
+  const all = await room(3);
+  const { drawer, word, guessers } = await begin(all);
+  guessers[0].send({ t: 'guess', text: 'zzzwrongzzz' });
+  const seen = await drawer.wait((m) => m.t === 'chat' && m.m.text === 'zzzwrongzzz');
+  assert.equal(seen.m.k, 'chat');
+  for (const g of guessers) g.send({ t: 'guess', text: word });
+  await guessers[0].phase('roundEnd');
+  const next = await guessers[0].next((m) => m.t === 'state' && m.phase === 'drawing', 6000);
+  assert.ok(!next.chat.some((m) => m.k === 'chat'), 'previous round guesses cleared');
+  all.forEach((c) => c.close());
+});
