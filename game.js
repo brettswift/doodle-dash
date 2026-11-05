@@ -7,6 +7,7 @@ const adapt = require('./adapt');
 const DEFAULT_ROTATIONS = 5, MIN_ROTATIONS = 1, MAX_ROTATIONS = 10;
 // Points: base time-decay points times the difficulty multiplier (tenths), rounded half up to an integer.
 const scaled = (base, diff) => Math.round(base * MULT10[diff] / 10);
+const EVERYONE_BONUS = 100, EVERYONE_MIN_GUESSERS = 2; // drawer bonus when every guesser gets the word
 
 const COLORS = new Set(['#000000', '#e63946', '#f4a261', '#ffd23f', '#2a9d8f', '#1d90ff', '#7b2cbf', '#8d5524', '#ffffff']);
 const MAX_PLAYERS = 8, MIN_PLAYERS = 2;
@@ -65,7 +66,7 @@ class Room {
     return p;
   }
   resume(token) { return this.players.find((p) => p.token === token); }
-  say(k, text, name) { this.chat.push({ k, name, text }); if (this.chat.length > 40) this.chat.shift(); return this.chat[this.chat.length - 1]; }
+  say(k, text, name) { this.chat.push({ k, name, text }); if (this.chat.length > 60) this.chat.shift(); return this.chat[this.chat.length - 1]; }
   sendAll(obj, except) { const s = JSON.stringify(obj); for (const p of this.connected) if (p !== except) p.send(s); }
   broadcastState(strokes = true) { for (const p of this.connected) p.send(JSON.stringify(this.view(p, strokes))); }
   attach(p, send, now) {
@@ -174,6 +175,7 @@ class Room {
     this.broadcastState();
   }
   beginDrawing(c, now) {
+    this.chat = this.chat.filter((m) => m.k !== 'chat'); // the word storm shows this round's guesses only
     this.word = c.word; this.diff = c.diff; this.choices = null;
     // Only the chosen topic is recorded; unchosen offers were merely held and are released here.
     this.ctx.topics.commit(this.code, c.id);
@@ -236,7 +238,14 @@ class Room {
       const d = this.drawer(); if (d) { const dg = scaled(25, this.diff); d.score += dg; d.gain += dg; }
       this.sendAll({ t: 'chat', m: this.say('ok', `${p.name} guessed it!`) });
       const guessers = this.connected.filter((q) => q.id !== this.drawerId);
-      if (guessers.length && guessers.every((q) => q.guessed)) return this.endRound(now, 'everyone guessed');
+      if (guessers.length && guessers.every((q) => q.guessed)) {
+        // Bonus for a word everyone got. Needs 2+ guessers so a 2-player room cannot farm it; scaled by difficulty, so Easy pays half of Hard.
+        if (d && guessers.length >= EVERYONE_MIN_GUESSERS) {
+          const bonus = scaled(EVERYONE_BONUS, this.diff); d.score += bonus; d.gain += bonus;
+          this.sendAll({ t: 'chat', m: this.say('ok', `Everyone got it! ${d.name} +${bonus}`) });
+        }
+        return this.endRound(now, 'everyone guessed');
+      }
       return this.broadcastState(false);
     }
     this.sendAll({ t: 'chat', m: this.say('chat', text, p.name) });

@@ -80,10 +80,12 @@ aside{display:flex;flex-direction:column;gap:10px;min-width:0}
 .board li{display:flex;justify-content:space-between;gap:6px;padding:3px 0;font-weight:700}
 .board li b{font-variant-numeric:tabular-nums}
 .board .me{color:var(--blue)}
-.chat{height:170px;padding:8px 12px;overflow-y:auto;background:var(--card);border:2px solid var(--edge);border-radius:var(--r);font-size:15px;overscroll-behavior:contain}
+.chat{height:170px;padding:8px 12px;overflow:hidden;background:var(--card);border:2px solid var(--edge);border-radius:var(--r);font-size:15px;overscroll-behavior:contain}
 .chat p{margin:2px 0;overflow-wrap:anywhere}
 .chat .sys{color:var(--muted)}
 .chat .ok{color:var(--mint);font-weight:800}
+.chat .storm{margin:4px 0 0;line-height:1.5;font-weight:700}
+.chat .storm .gw{white-space:nowrap}
 #guessForm{display:flex;gap:8px}
 #guessForm .primary{flex:none;padding:0 18px}
 #gameErr{margin:0}
@@ -95,7 +97,7 @@ aside{display:flex;flex-direction:column;gap:10px;min-width:0}
   aside{display:grid;gap:6px}
   #guessForm{order:1}
   #gameErr{order:2}
-  .chat{order:3;height:84px}
+  .chat{order:3;height:128px;font-size:14px}
   .board{order:4}
   .canvaswrap{margin:0 -6px;border-width:2px 0;border-radius:0}
 }

@@ -119,10 +119,22 @@ function renderGame() {
   }
   renderChat(); renderOverlay(drawer);
 }
+// Guesses are shown as one comma-separated "word storm" that never scrolls: the oldest guesses drop off only when the box is full.
+// The latest system line (who got it, the answer) sits above it.
 function renderChat() {
-  const c = $('chat'); const stick = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
-  c.replaceChildren(...st.chat.map((m) => el('p', { className: m.k }, m.k === 'chat' ? el('b', { textContent: m.name + ': ' }) : '', m.text)));
-  if (stick) c.scrollTop = c.scrollHeight;
+  const c = $('chat');
+  const notes = st.chat.filter((m) => m.k !== 'chat').slice(-1);
+  const guesses = st.chat.filter((m) => m.k === 'chat');
+  const draw = (from) => {
+    const storm = el('p', { className: 'storm' });
+    guesses.slice(from).forEach((m, k) => {
+      if (k) storm.append(', ');
+      storm.append(el('span', { className: 'gw', title: m.name, textContent: m.text }));
+    });
+    c.replaceChildren(...notes.map((m) => el('p', { className: m.k, textContent: m.text })), storm);
+  };
+  let from = 0; draw(from);
+  while (c.scrollHeight > c.clientHeight + 1 && from < guesses.length - 1) draw(++from);
 }
 function renderOverlay(drawer) {
   const o = $('overlay'); o.replaceChildren(); o.hidden = false;
