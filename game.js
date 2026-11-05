@@ -38,7 +38,7 @@ class Room {
   resetGame() {
     this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.rotation = 0; this.rotSize = 0; this.diff = null; this.gid = crypto.randomBytes(4).toString('hex');
     this.drawerId = null; this.word = null; this.choices = null; this.strokes = []; this.pts = 0;
-    this.deadline = 0; this.drawerGone = 0;
+    this.deadline = 0; this.drawerGone = 0; this.showcase = [];
     for (const p of this.players) { p.score = 0; p.gain = 0; p.guessed = false; }
   }
   get connected() { return this.players.filter((p) => p.send); }
@@ -104,6 +104,7 @@ class Room {
       v.rotTurn = this.rotSize - this.queue.length; v.rotTurns = this.rotSize;
     }
     if (withStrokes) v.strokes = this.strokes;
+    if (this.phase === 'gameOver') v.showcase = this.bestWorst();
     if (this.phase === 'choosing' && you) v.choices = this.choices.map((c) => ({ word: c.word, diff: c.diff, mult: MULT10[c.diff] / 10 }));
     if (showWord && this.word) v.word = this.word;
     // difficulty is shown to the drawer while drawing and to everyone only once the word is revealed
@@ -123,7 +124,7 @@ class Room {
         if (this.connected.length < MIN_PLAYERS) return err('Need at least 2 players');
         this.players = this.players.filter((q) => q.send);
         this.queue = []; this.rotation = 0; this.rotSize = 0;
-        this.chat = [];
+        this.chat = []; this.showcase = [];
         return this.nextRound(now);
       }
       case 'rounds': {
@@ -189,11 +190,28 @@ class Room {
     if (!['choosing', 'drawing'].includes(this.phase)) return;
     this.finishRec(now, OUTCOME[why] || 'abandoned');
     this.ctx.topics.release(this.code);
+    this.keepDrawing();
     this.phase = 'roundEnd'; this.deadline = now + this.cfg.result; this.drawn++;
     if (!this.word && this.choices) this.word = null;
     this.choices = null;
     this.say('sys', this.word ? `The word was ${this.word}${why ? ' (' + why + ')' : ''}` : `Round skipped${why ? ' (' + why + ')' : ''}`);
     this.broadcastState();
+  }
+  // Remember this round's drawing (in memory, this room only) for the game-over best/worst reveal.
+  keepDrawing() {
+    const d = this.drawer();
+    if (!d || !this.word || !this.strokes.length) return;
+    this.showcase.push({ name: d.name, word: this.word, diff: this.diff, gain: d.gain, strokes: this.strokes });
+    if (this.showcase.length > 100) this.showcase.shift();
+  }
+  // Best = most points earned by the drawer; worst = fewest, always a different drawing. One drawing gives only a best.
+  bestWorst() {
+    const list = this.showcase;
+    if (!list.length) return null;
+    let bi = 0; list.forEach((x, i) => { if (x.gain > list[bi].gain) bi = i; });
+    let wi = -1; list.forEach((x, i) => { if (i !== bi && (wi < 0 || x.gain <= list[wi].gain)) wi = i; });
+    const pick = (x) => ({ name: x.name, word: x.word, diff: x.diff, gain: x.gain, strokes: x.strokes });
+    return { best: pick(list[bi]), worst: wi < 0 ? null : pick(list[wi]) };
   }
   // Anonymous per-drawing telemetry: no names/ids/IPs; times are ms since the drawing began.
   finishRec(now, out) {

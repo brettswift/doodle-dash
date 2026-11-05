@@ -303,3 +303,37 @@ test('word storm: wrong guesses are cleared at the start of each drawing round',
   assert.ok(!next.chat.some((m) => m.k === 'chat'), 'previous round guesses cleared');
   all.forEach((c) => c.close());
 });
+
+test('game over shows the best and worst drawings by points the drawer earned', async () => {
+  process.env.DRAW_MS = '1200'; process.env.RESULT_MS = '900';
+  const all = await room(3);
+  process.env.RESULT_MS = '300';
+  all[0].send({ t: 'rounds', n: 1 }); await all[0].wait((m) => m.t === 'state' && m.rotations === 1);
+  const host = all[0]; let cursor = host.msgs.length; const drawers = [];
+  host.send({ t: 'start' });
+  for (let turn = 1; turn <= 3; turn++) {
+    const m = await host.wait((x) => host.msgs.indexOf(x) >= cursor && x.t === 'state' && x.phase === 'choosing', 5000);
+    const drawer = byId(all, m.drawerId); drawers.push(drawer);
+    await drawer.wait((x) => x.t === 'state' && x.phase === 'choosing' && x.choices && x.turn === m.turn);
+    drawer.send({ t: 'pick', i: 0 });
+    const dw = await drawer.next((x) => x.t === 'state' && x.phase === 'drawing' && x.word);
+    drawer.send({ t: 'draw', s: true, c: '#000000', w: 4, p: [10 * turn, 10, 200, 200] });
+    const others = all.filter((c) => c !== drawer);
+    if (turn === 1) for (const c of others) c.send({ t: 'guess', text: dw.word }); // everyone: highest score
+    if (turn === 3) others[0].send({ t: 'guess', text: dw.word });                 // one of two: middle
+    // turn 2: nobody guesses, so the drawer earns nothing
+    await host.next((x) => x.t === 'state' && x.phase === 'roundEnd', 4000);
+    cursor = host.msgs.length;
+  }
+  const over = await host.wait((x) => x.t === 'state' && x.phase === 'gameOver', 5000);
+  const sc = over.showcase;
+  assert.ok(sc && sc.best && sc.worst, 'best and worst present');
+  assert.equal(sc.best.name, drawers[0].name); assert.equal(sc.worst.name, drawers[1].name);
+  assert.ok(sc.best.gain > sc.worst.gain);
+  assert.ok(sc.best.strokes.length >= 1 && sc.worst.strokes.length >= 1, 'drawings kept');
+  assert.notEqual(sc.best.word, undefined);
+  all[0].send({ t: 'again' });
+  const lob = await all[2].phase('lobby');
+  assert.equal(lob.showcase, undefined, 'not shown outside game over');
+  all.forEach((c) => c.close());
+});

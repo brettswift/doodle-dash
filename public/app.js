@@ -136,8 +136,44 @@ function renderChat() {
   let from = 0; draw(from);
   while (c.scrollHeight > c.clientHeight + 1 && from < guesses.length - 1) draw(++from);
 }
+// Game-over reveal: best drawing first, then the worst once the bar has run down; tapping the picture switches between them.
+const SHOW_MS = 7000;
+let reveal = { key: null, idx: 0, start: 0, auto: true };
+function drawStrokesOn(c2, strokes) {
+  const w = c2.canvas.width, h = c2.canvas.height, k = G.lineScale(w);
+  c2.fillStyle = '#fff'; c2.fillRect(0, 0, w, h); c2.lineCap = 'round'; c2.lineJoin = 'round';
+  for (const s of strokes) {
+    c2.strokeStyle = s.c; c2.fillStyle = s.c; c2.lineWidth = s.w * k;
+    const p = s.p;
+    if (p.length === 2) { const A = G.toPixel([p[0], p[1]], w, h); c2.beginPath(); c2.arc(A[0], A[1], s.w * k / 2, 0, 7); c2.fill(); continue; }
+    c2.beginPath(); const A = G.toPixel([p[0], p[1]], w, h); c2.moveTo(A[0], A[1]);
+    for (let i = 2; i < p.length; i += 2) { const B = G.toPixel([p[i], p[i + 1]], w, h); c2.lineTo(B[0], B[1]); }
+    c2.stroke();
+  }
+}
+function showcaseCards() { const sc = st && st.showcase; return sc ? [sc.best, sc.worst].filter(Boolean) : []; }
+function paintShowcase() {
+  const cards = showcaseCards(), box = $('showcase');
+  if (!box || !cards.length) return;
+  const idx = Math.min(reveal.idx, cards.length - 1), c = cards[idx];
+  const cvs = box.querySelector('canvas');
+  drawStrokesOn(cvs.getContext('2d'), c.strokes);
+  box.querySelector('.showlabel').textContent = idx === 0 ? 'Best drawing' : 'Worst drawing';
+  box.querySelector('.showcap').textContent = `${c.name} drew “${c.word}” · ${c.gain} pts`;
+  box.querySelector('.showhint').textContent = cards.length > 1 ? 'Tap the picture to switch' : '';
+}
+function showcaseCard() {
+  const cards = showcaseCards();
+  if (!cards.length) return null;
+  const cvs = el('canvas', { width: 480, height: 400 });
+  const box = el('div', { id: 'showcase', className: 'showcase' },
+    el('div', { className: 'showlabel' }), cvs, el('div', { className: 'showcap' }), el('div', { className: 'showhint sub small' }));
+  cvs.onclick = () => { if (cards.length < 2) return; reveal.auto = false; reveal.idx = (reveal.idx + 1) % cards.length; paintShowcase(); };
+  return box;
+}
 function renderOverlay(drawer) {
   const o = $('overlay'); o.replaceChildren(); o.hidden = false;
+  if (st.phase !== 'gameOver') reveal = { key: null, idx: 0, start: 0, auto: true };
   if (st.phase === 'choosing') {
     if (isDrawer()) {
       o.append(el('h2', { textContent: 'Pick a word to draw' }));
@@ -156,6 +192,11 @@ function renderOverlay(drawer) {
     const ol = el('ol');
     [...st.players].sort((a, z) => z.score - a.score).forEach((p, i) =>
       ol.append(el('li', {}, el('span', { textContent: `${over ? i + 1 + '. ' : ''}${p.name}` }), el('b', { textContent: p.score + (!over && p.gain ? ` (+${p.gain})` : '') }))));
+    if (over) {
+      const key = st.code + ':' + st.turn;
+      if (reveal.key !== key) reveal = { key, idx: 0, start: Date.now(), auto: true };
+      const card = showcaseCard(); if (card) { o.append(card); paintShowcase(); }
+    }
     o.append(ol);
     if (over) {
       if (st.you === st.hostId) o.append(el('button', { className: 'primary', textContent: 'Play again', onclick: () => send({ t: 'again' }) }));
@@ -173,6 +214,11 @@ setInterval(() => {
   const active = st.phase === 'choosing' || st.phase === 'drawing';
   $('timer').textContent = active ? Math.ceil(left / 1000) : '–';
   $('barFill').style.width = active ? Math.min(100, left / (st.total || total) * 100) + '%' : '0';
+  if (st.phase === 'gameOver') {
+    const cards = showcaseCards(), gone = Date.now() - reveal.start;
+    $('barFill').style.width = cards.length > 1 && reveal.auto && reveal.idx === 0 ? Math.max(0, 100 - gone / SHOW_MS * 100) + '%' : '0';
+    if (cards.length > 1 && reveal.auto && reveal.idx === 0 && gone >= SHOW_MS) { reveal.idx = 1; paintShowcase(); }
+  }
 }, 250);
 
 // ---------- canvas ----------
