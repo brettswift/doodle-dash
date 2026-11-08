@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#f7f0df">
+<meta name="theme-color" content="#2a2420">
+<script src="/theme.js?v=cb2"></script>
 <meta name="description" content="Crayon Breath: draw it, guess it, get it wrong. A quick multiplayer drawing and guessing game for 2 to 8 players.">
 <meta property="og:title" content="Crayon Breath">
 <meta property="og:description" content="Draw it! Guess it! Get it wrong! A quick multiplayer drawing and guessing game.">
 <meta property="og:type" content="website">
 <title>Crayon Breath</title>
-<link rel="icon" href="/favicon.svg?v=cb1" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg?v=cb2" type="image/svg+xml">
 <link rel="preload" href="/fonts/Schoolbell-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/PatrickHand-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/style.css?v=cb1">
+<link rel="stylesheet" href="/style.css?v=cb2">
 </head>
 <body>
 <svg class="fx" aria-hidden="true" focusable="false">
@@ -22,6 +23,7 @@
 <div id="banner" role="status" hidden>Reconnecting…</div>
 
 <main id="home" class="page" hidden>
+  <div class="themerow"><button id="themeBtn" class="themebtn" type="button" aria-pressed="true" aria-label="Dark mode">Dark</button></div>
   <h1 class="title"><span class="a">Cray</span><span class="b">on</span> <span class="c">Breath</span></h1>
   <p class="tag">Draw it! Guess it! Get it wrong!</p>
   <div class="namebox">
@@ -112,7 +114,7 @@
     </aside>
   </div>
 </section>
-<script src="/geom.js?v=cb1"></script>
-<script src="/app.js?v=cb1"></script>
+<script src="/geom.js?v=cb2"></script>
+<script src="/app.js?v=cb2"></script>
 </body>
 </html>
