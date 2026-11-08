@@ -1,6 +1,6 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json server.js game.js ws.js words.js catalog.js history.js topics.js adapt.js export.js ./
+COPY package.json server.js game.js ws.js words.js catalog.js history.js topics.js adapt.js export.js lobby.js ./
 COPY public ./public
 ENV NODE_ENV=production PORT=8080 DATA_DIR=/data
 ARG GIT_SHA=dev
