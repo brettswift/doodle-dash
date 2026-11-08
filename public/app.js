@@ -99,7 +99,7 @@ rsel.onchange = () => send({ t: 'rounds', n: +rsel.value });
 function renderLobby() {
   $('lobbyCode').textContent = st.code;
   const ul = $('lobbyPlayers'); ul.replaceChildren();
-  for (const p of st.players) ul.append(el('li', { className: p.connected ? '' : 'off', textContent: p.name + (p.id === st.hostId ? ' ★' : '') }));
+  for (const p of st.players) ul.append(el('li', { className: p.connected ? '' : 'off', textContent: p.name + (p.id === st.hostId ? ' (host)' : '') }));
   const host = st.you === st.hostId;
   rsel.disabled = !host; rsel.value = st.rotations;
   $('roundsHelp').textContent = `A round = every player draws once (${st.players.length} turn${st.players.length === 1 ? '' : 's'} now). ${st.rotations} round${st.rotations === 1 ? '' : 's'} = ${st.rotations * st.players.length} turns. ${host ? '' : 'Only the host changes this.'}`;
@@ -125,8 +125,10 @@ function renderGame() {
   $('guess').placeholder = isDrawer() ? 'You are drawing!' : me().guessed ? 'You got it!' : 'Type your guess';
   const b = $('board'); b.replaceChildren();
   for (const p of [...st.players].sort((a, z) => z.score - a.score)) {
-    const tag = (p.id === st.drawerId && st.phase !== 'gameOver' ? '✏️ ' : '') + (p.guessed ? '✅ ' : '');
-    b.append(el('li', { className: (p.connected ? '' : 'off ') + (p.id === st.you ? 'me' : '') }, el('span', { textContent: tag + p.name }), el('b', { textContent: p.score })));
+    const name = el('span', { textContent: p.name });
+    if (p.id === st.drawerId && st.phase !== 'gameOver') name.append(el('span', { className: 'tagd', textContent: 'drawing' }));
+    if (p.guessed) name.append(el('span', { className: 'tagg', textContent: 'got it' }));
+    b.append(el('li', { className: (p.connected ? '' : 'off ') + (p.id === st.you ? 'me' : '') }, name, el('b', { textContent: p.score })));
   }
   renderChat(); renderOverlay(drawer);
 }
@@ -210,9 +212,10 @@ function renderOverlay(drawer) {
     }
     o.append(ol);
     if (over) {
-      if (st.you === st.hostId) o.append(el('button', { className: 'primary', textContent: 'Play again', onclick: () => send({ t: 'again' }) }));
+      if (st.you === st.hostId) o.append(el('button', { className: 'go', textContent: 'Play again', onclick: () => send({ t: 'again' }) }));
       else o.append(el('p', { className: 'sub', textContent: 'Waiting for host…' }));
-      o.append(el('button', { className: 'link', textContent: 'Leave', onclick: leave }));
+      o.append(el('button', { className: 'ghost', textContent: 'Leave', onclick: leave }));
+      o.append(el('div', { className: 'slot', ariaHidden: 'true' })); // reserved for a future ad; empty on purpose
     }
   } else o.hidden = true;
 }

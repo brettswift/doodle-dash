@@ -269,7 +269,22 @@ test('abuse: oversized frames closed, bad json ignored, floods rate limited, no 
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200);
   const idx = await fetch(`http://127.0.0.1:${srv.port}/`);
   assert.equal(idx.status, 200);
-  assert.match(await idx.text(), /Doodle Dash/);
+  const html = await idx.text();
+  assert.match(html, /<title>Crayon Breath<\/title>/);
+  assert.doesNotMatch(html, /Doodle Dash/);
+  // three matching landing cards (public, private, join) plus the waiting and room-lobby cards
+  assert.equal((html.match(/class="opt [pmj]"/g) || []).length, 5);
+  for (const id of ['publicBtn', 'create', 'join']) assert.match(html, new RegExp(`id="${id}" class="go"`));
+  // every referenced asset is served, self-hosted and cache-busted with one shared version
+  const refs = [...html.matchAll(/(?:href|src)="(\/[^"]+)"/g)].map((m) => m[1]);
+  const vers = new Set(refs.filter((r) => /\.(css|js|svg)\?/.test(r)).map((r) => r.split('?v=')[1]));
+  assert.equal(vers.size, 1); assert.ok([...vers][0]);
+  for (const r of refs) {
+    const a = await fetch(`http://127.0.0.1:${srv.port}${r}`);
+    assert.equal(a.status, 200, r);
+    if (r.includes('.woff2')) assert.equal(a.headers.get('content-type'), 'font/woff2');
+  }
+  assert.doesNotMatch(html, /https?:\/\//);
 });
 
 test('drawer gets a difficulty-scaled bonus when everyone guesses; none when a guesser misses or only one guesses', async () => {
