@@ -295,4 +295,4 @@ class Game {
     }
   }
 }
-module.exports = { Game, MAX_PLAYERS, DEFAULT_ROTATIONS, MIN_ROTATIONS, MAX_ROTATIONS, scaled };
+module.exports = { Game, NAME_RE, MAX_PLAYERS, DEFAULT_ROTATIONS, MIN_ROTATIONS, MAX_ROTATIONS, scaled };

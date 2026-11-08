@@ -6,7 +6,7 @@ const SIZES = [4, 10, 22];
 const KEY = 'doodle-dash-session';
 const NAMEKEY = 'doodle-dash-name';
 
-let ws = null, sess = null, st = null, recvAt = 0, retry = 0, wantOpen = false, pendingEnter = null;
+let ws = null, sess = null, st = null, recvAt = 0, retry = 0, wantOpen = false, pendingEnter = null, pub = null;
 let strokes = [], tool = { c: COLORS[0], w: SIZES[1], eraser: false };
 const G = window.DDGeom;
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -31,6 +31,7 @@ function connect() {
   ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMsg(m); };
   ws.onclose = () => {
     if (mine !== ws) return;
+    if (pub) { pub = null; show('home'); $('homeErr').textContent = 'Connection lost. Try Public lobby again.'; return; }
     if (wantOpen && sess) { $('banner').hidden = false; setTimeout(connect, Math.min(5000, 400 * 2 ** retry++)); }
   };
 }
@@ -40,7 +41,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && wa
 function onMsg(m) {
   switch (m.t) {
     case 'joined':
-      sess = { code: m.code, token: m.token }; saveSess(); break;
+      pub = null; sess = { code: m.code, token: m.token }; saveSess(); break;
+    case 'public': pub = { n: m.n, max: m.max, remaining: m.remaining, at: Date.now() }; show('waiting'); renderWait(); break;
     case 'state': onState(m); break;
     case 'draw': remoteDraw(m); break;
     case 'clear': strokes = []; paintAll(); break;
@@ -49,6 +51,7 @@ function onMsg(m) {
   }
 }
 function onError(msg) {
+  pub = null;
   if (!st) {
     if (/session|No such room/i.test(msg) && sess) { sess = null; saveSess(); }
     $('homeErr').textContent = msg; show('home'); wantOpen = false; if (ws) ws.close();
@@ -57,7 +60,15 @@ function onError(msg) {
 }
 
 // ---------- views ----------
-function show(v) { for (const s of ['home', 'lobby', 'game']) $(s).hidden = s !== v; }
+function show(v) { for (const s of ['home', 'waiting', 'lobby', 'game']) $(s).hidden = s !== v; }
+// Public lobby waiting page. The server owns the countdown; we count down locally from the last remaining ms it sent.
+function renderWait() {
+  if (!pub) return;
+  $('waitCount').textContent = `${pub.n} of ${pub.max} players`;
+  $('waitTimer').textContent = pub.remaining == null ? 'Waiting for more players'
+    : `starting in... ${Math.max(0, Math.ceil((pub.remaining - (Date.now() - pub.at)) / 1000))}`;
+}
+setInterval(() => { if (pub) renderWait(); }, 200);
 function onState(m) {
   const prev = st;
   if (m.strokes) strokes = m.strokes; else if (prev) m.strokes = strokes;
@@ -312,6 +323,8 @@ function enter(msg) {
   connect();
 }
 $('create').onclick = () => enter({ t: 'create' });
+$('publicBtn').onclick = () => enter({ t: 'public' });
+$('leaveWait').onclick = () => { send({ t: 'leavePublic' }); pub = null; leave(); };
 $('join').onclick = () => enter({ t: 'join', code: $('code').value.trim().toUpperCase() });
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('join').click(); });
 $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') ($('code').value ? $('join') : $('create')).click(); });
