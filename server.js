@@ -13,6 +13,9 @@ const FILES = {
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/geom.js': ['geom.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/fonts/Schoolbell-400.woff2': ['fonts/Schoolbell-400.woff2', 'font/woff2'],
+  '/fonts/PatrickHand-400.woff2': ['fonts/PatrickHand-400.woff2', 'font/woff2'],
 };
 const net = require('node:net');
 // Public-routable only: anything private/loopback/link-local/CGNAT/ULA is never a usable client identity.

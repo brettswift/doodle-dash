@@ -3,51 +3,84 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#13111c">
-<title>Doodle Dash</title>
-<link rel="stylesheet" href="/style.css">
+<meta name="theme-color" content="#f7f0df">
+<meta name="description" content="Crayon Breath: draw it, guess it, get it wrong. A quick multiplayer drawing and guessing game for 2 to 8 players.">
+<meta property="og:title" content="Crayon Breath">
+<meta property="og:description" content="Draw it! Guess it! Get it wrong! A quick multiplayer drawing and guessing game.">
+<meta property="og:type" content="website">
+<title>Crayon Breath</title>
+<link rel="icon" href="/favicon.svg?v=cb1" type="image/svg+xml">
+<link rel="preload" href="/fonts/Schoolbell-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/PatrickHand-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/style.css?v=cb1">
 </head>
 <body>
-<div id="banner" hidden>Reconnecting…</div>
+<svg class="fx" aria-hidden="true" focusable="false">
+  <filter id="wax"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="4" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="5"/></filter>
+  <filter id="rough"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="3" seed="8" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="6"/></filter>
+</svg>
+<div id="banner" role="status" hidden>Reconnecting…</div>
 
-<section id="home" class="card narrow" hidden>
-  <h1>Doodle<span>Dash</span></h1>
-  <p class="sub">Draw it. Guess it. 2–8 players.</p>
-  <label>Your name<input id="name" maxlength="14" autocomplete="nickname" placeholder="Pat"></label>
-  <button id="create" class="primary">Create room</button>
-  <button id="publicBtn" class="primary">Public lobby</button>
-  <div class="or">or join a friend</div>
-  <div class="row">
-    <input id="code" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" aria-label="Room code">
-    <button id="join">Join</button>
+<main id="home" class="page" hidden>
+  <h1 class="title"><span class="a">Cray</span><span class="b">on</span> <span class="c">Breath</span></h1>
+  <p class="tag">Draw it! Guess it! Get it wrong!</p>
+  <div class="namebox">
+    <label for="name">Your name</label>
+    <input id="name" maxlength="14" autocomplete="nickname" placeholder="Pat">
+  </div>
+  <div class="opts">
+    <div class="opt p">
+      <h2>Public lobby</h2>
+      <p>Play with strangers. Three quick rounds.</p>
+      <button id="publicBtn" class="go" type="button">Join a public lobby</button>
+    </div>
+    <div class="opt m">
+      <h2>Private game</h2>
+      <p>Play with friends in your own room.</p>
+      <button id="create" class="go" type="button">Create private room</button>
+    </div>
+    <div class="opt j">
+      <h2>Join with a code</h2>
+      <p>Got a four-letter code from a friend?</p>
+      <input id="code" class="codefield" maxlength="4" placeholder="ABCD" autocapitalize="characters" autocomplete="off" aria-label="Room code">
+      <button id="join" class="go" type="button">Join room</button>
+    </div>
   </div>
   <p id="homeErr" class="err" role="alert"></p>
-</section>
+  <div class="slot" aria-hidden="true"></div>
+</main>
 
-<section id="waiting" class="card narrow" hidden>
-  <h2>Public lobby</h2>
-  <p class="sub">Quick game: 3 rounds. Starts with 2 to 5 players.</p>
-  <div id="waitCount" class="bigcount">1 of 5 players</div>
-  <div id="waitTimer" class="bigtimer">Waiting for more players</div>
-  <p id="waitErr" class="err" role="alert"></p>
-  <button id="leaveWait">Leave</button>
-</section>
+<main id="waiting" class="page" hidden>
+  <p class="title small"><span class="a">Cray</span><span class="b">on</span> <span class="c">Breath</span></p>
+  <div class="opt p">
+    <h2>Public lobby</h2>
+    <p>Quick game: 3 rounds. Starts with 2 to 5 players.</p>
+    <div id="waitCount" class="bigcount">1 of 5 players</div>
+    <div id="waitTimer" class="bigtimer">Waiting for more players</div>
+    <p id="waitErr" class="err" role="alert"></p>
+    <button id="leaveWait" class="ghost" type="button">Leave</button>
+  </div>
+</main>
 
-<section id="lobby" class="card narrow" hidden>
-  <p class="sub">Room code</p>
-  <div id="lobbyCode" class="bigcode"></div>
-  <button id="invite">Copy invite link</button>
-  <ul id="lobbyPlayers" class="chips"></ul>
-  <label id="roundsRow" class="rounds">Rounds
-    <select id="rounds" aria-describedby="roundsHelp"></select>
-  </label>
-  <p id="roundsHelp" class="sub small"></p>
-  <p class="sub small">Difficulty: Easy ×1, Medium ×1.5, Hard ×2 points. The drawer picks one of three words; faster guesses score more. The drawer gets a bonus when everyone guesses the word (bigger on harder words).</p>
-  <button id="start" class="primary" hidden>Start game</button>
-  <p id="lobbyHint" class="sub"></p>
-  <p id="lobbyErr" class="err" role="alert"></p>
-  <button id="leaveLobby" class="link">Leave</button>
-</section>
+<main id="lobby" class="page" hidden>
+  <p class="title small"><span class="a">Cray</span><span class="b">on</span> <span class="c">Breath</span></p>
+  <div class="opt m">
+    <h2>Your room</h2>
+    <p>Share this code with your friends.</p>
+    <div id="lobbyCode" class="bigcode"></div>
+    <button id="invite" class="go" type="button">Copy invite link</button>
+    <ul id="lobbyPlayers" class="chips" aria-label="Players"></ul>
+    <label id="roundsRow" class="rounds">Rounds
+      <select id="rounds" aria-describedby="roundsHelp"></select>
+    </label>
+    <p id="roundsHelp" class="sub small"></p>
+    <p class="sub small">Difficulty: Easy ×1, Medium ×1.5, Hard ×2 points. The drawer picks one of three words; faster guesses score more. The drawer gets a bonus when everyone guesses the word (bigger on harder words).</p>
+    <button id="start" class="go start" type="button" hidden>Start game</button>
+    <p id="lobbyHint" class="sub"></p>
+    <p id="lobbyErr" class="err" role="alert"></p>
+    <button id="leaveLobby" class="ghost" type="button">Leave</button>
+  </div>
+</main>
 
 <section id="game" hidden>
   <header class="top">
@@ -65,7 +98,7 @@
       <div id="tools" hidden>
         <div id="colors" role="group" aria-label="Colors"></div>
         <div id="sizes" role="group" aria-label="Brush size"></div>
-        <div id="acts"><button id="eraser" aria-pressed="false">Eraser</button><button id="clear">Clear</button></div>
+        <div id="acts"><button id="eraser" type="button" aria-pressed="false">Eraser</button><button id="clear" type="button">Clear</button></div>
       </div>
     </div>
     <aside>
@@ -73,13 +106,13 @@
       <div id="chat" class="chat" tabindex="-1"></div>
       <form id="guessForm" autocomplete="off">
         <input id="guess" maxlength="40" placeholder="Type your guess" aria-label="Guess">
-        <button class="primary">Guess</button>
+        <button class="go">Guess</button>
       </form>
       <p id="gameErr" class="err" role="alert"></p>
     </aside>
   </div>
 </section>
-<script src="/geom.js"></script>
-<script src="/app.js"></script>
+<script src="/geom.js?v=cb1"></script>
+<script src="/app.js?v=cb1"></script>
 </body>
 </html>
