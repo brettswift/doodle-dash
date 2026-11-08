@@ -1,6 +1,6 @@
 # Doodle Dash production on Fly.io. One machine only: Doodle has a single writer.
 app = "doodle-dash-prod"
-primary_region = "sea"
+primary_region = "sjc"
 
 [build]
   dockerfile = "Dockerfile"

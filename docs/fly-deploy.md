@@ -1,6 +1,6 @@
 # Doodle Dash on Fly.io
 
-Production runs as one Fly app (doodle-dash-prod, region sea) with exactly one machine and one 1 GB volume named doodle_data mounted at /data. Doodle has a single writer, so never scale past one machine. The machine stops itself when idle and wakes on the next request, so cost at low traffic is mostly the volume. The app uses shared IPv4 and IPv6 only; never allocate a dedicated IPv4 (it costs about $2 a month).
+Production runs as one Fly app (doodle-dash-prod, region sjc) with exactly one machine and one 1 GB volume named doodle_data mounted at /data. Doodle has a single writer, so never scale past one machine. The machine stops itself when idle and wakes on the next request, so cost at low traffic is mostly the volume. The app uses shared IPv4 and IPv6 only; never allocate a dedicated IPv4 (it costs about $2 a month).
 
 All flyctl commands need FLY_API_TOKEN in the environment. On buddyserver, export it from ~/.hermes/.env without printing it.
 
@@ -14,7 +14,7 @@ Run `fly releases --app doodle-dash-prod` to find the last good image, then `fly
 
 ## Restore from a Fly snapshot
 
-Fly takes a daily volume snapshot and keeps 30 days (snapshot_retention in fly.toml). List them with `fly volumes list` for the volume id, then `fly volumes snapshots list <volume-id>`. Restore by creating a new volume from a snapshot: `fly volumes create doodle_data --snapshot-id <snapshot-id> --size 1 --region sea`. Stop the machine, then destroy the old machine and recreate it so it mounts the new volume (`fly machine destroy <id> --force`, then `fly deploy --ha=false`). Remove the old volume once the app is confirmed healthy.
+Fly takes a daily volume snapshot and keeps 30 days (snapshot_retention in fly.toml). List them with `fly volumes list` for the volume id, then `fly volumes snapshots list <volume-id>`. Restore by creating a new volume from a snapshot: `fly volumes create doodle_data --snapshot-id <snapshot-id> --size 1 --region sjc`. Stop the machine, then destroy the old machine and recreate it so it mounts the new volume (`fly machine destroy <id> --force`, then `fly deploy --ha=false`). Remove the old volume once the app is confirmed healthy.
 
 ## Restore from a pulled backup
 
@@ -30,6 +30,8 @@ Do this only after a real game has been played on the fly.dev URL.
 4. Watch https://doodle.brettswift.com/healthz and play a game.
 
 Rollback is one step: delete the CNAME and recreate the A record with the old home IP (TTL 60). The home deployment is never modified, so it keeps serving. Raise the TTL again once stable.
+
+After the cut-over the home Doodle moves to a different hostname of its own (a new A record to the home IP); doodle.brettswift.com belongs to Fly from then on. Until that new hostname exists, the one-step rollback above is the way back to the home deployment.
 
 A dedicated domain later only needs another `fly certs add` and DNS record; nothing in the app depends on the hostname.
 
