@@ -349,6 +349,11 @@ function leave() {
 }
 $('leaveLobby').onclick = leave;
 
+// ---------- theme toggle (theme.js already applied the saved theme in <head>) ----------
+function syncTheme() { const d = window.__theme.get() === 'dark'; $('themeBtn').textContent = d ? 'Dark' : 'Light'; $('themeBtn').setAttribute('aria-pressed', String(d)); }
+$('themeBtn').onclick = () => { window.__theme.set(window.__theme.get() === 'dark' ? 'light' : 'dark'); syncTheme(); };
+syncTheme();
+
 // ---------- boot ----------
 try { $('name').value = localStorage.getItem(NAMEKEY) || ''; } catch {}
 const q = new URLSearchParams(location.search).get('room');

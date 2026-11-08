@@ -5,16 +5,24 @@
   color-scheme:light;
   --paper:#f7f0df;--sheet:#fffbef;--ink:#2d2a26;--muted:#6b6358;--line:#d8ccb2;
   --red:#d9402f;--blue:#2f6fb5;--green:#3f9b5a;--err:#b3261e;
+  --on:#fff;--field:#fff;--hold:#a39a8a;--dot:rgba(70,50,20,.06);--shade:rgba(45,42,38,.35);--drop:rgba(45,42,38,.18);--veil:rgba(247,240,223,.97);
   --c:var(--ink);
   --r:10px;--tap:44px;
   --kid:Schoolbell,'Patrick',sans-serif;
   --hand:'Patrick',Schoolbell,sans-serif;
 }
+/* dark: warm charcoal paper, lightened crayons. Only variables change; every rule is shared. */
+:root[data-theme=dark]{
+  color-scheme:dark;
+  --paper:#2a2420;--sheet:#352e29;--ink:#f1e8d6;--muted:#c4b8a4;--line:#5a4c40;
+  --red:#ff8a75;--blue:#86b6f0;--green:#84d29a;--err:#ff9d90;
+  --on:#2a2420;--field:#231e1a;--hold:#9a8f7e;--dot:rgba(255,236,205,.06);--shade:rgba(0,0,0,.45);--drop:rgba(0,0,0,.4);--veil:rgba(42,36,32,.97);
+}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 html,body{margin:0;min-height:100%}
 body{background:var(--paper);color:var(--ink);font:19px/1.35 var(--hand);
-  background-image:radial-gradient(rgba(70,50,20,.06) 1px,transparent 1.5px),linear-gradient(var(--paper),var(--paper));background-size:7px 7px,auto;
+  background-image:radial-gradient(var(--dot) 1px,transparent 1.5px),linear-gradient(var(--paper),var(--paper));background-size:7px 7px,auto;
   padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}
 [hidden]{display:none!important}
 svg.fx{position:absolute;width:0;height:0;overflow:hidden}
@@ -25,12 +33,12 @@ button{min-height:var(--tap);padding:0 16px;border:3px solid var(--ink);border-r
 button:active:not(:disabled){transform:translateY(1px)}
 button:disabled{opacity:.45;cursor:default}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:3px dashed var(--blue);outline-offset:3px}
-button.go{border:0;background:var(--c);color:#fff;font-size:24px;min-height:56px;box-shadow:0 3px 0 rgba(45,42,38,.35)}
-button.go:active:not(:disabled){box-shadow:0 1px 0 rgba(45,42,38,.35);transform:translateY(2px)}
+button.go{border:0;background:var(--c);color:var(--on);font-size:24px;min-height:56px;box-shadow:0 3px 0 var(--shade)}
+button.go:active:not(:disabled){box-shadow:0 1px 0 var(--shade);transform:translateY(2px)}
 button.ghost{width:100%;margin-top:12px;background:transparent}
 button[aria-pressed=true]{background:var(--ink);color:var(--sheet)}
-input,select{width:100%;min-height:var(--tap);padding:0 12px;border:3px solid var(--c);border-radius:10px;background:#fff;color:var(--ink);font-size:20px}
-input::placeholder{color:#a39a8a;opacity:1}
+input,select{width:100%;min-height:var(--tap);padding:0 12px;border:3px solid var(--c);border-radius:10px;background:var(--field);color:var(--ink);font-size:20px}
+input::placeholder{color:var(--hold);opacity:1}
 label{display:block}
 .sub{margin:6px 0 0;color:var(--muted)}
 .small{font-size:16px}
@@ -44,6 +52,8 @@ label{display:block}
 .title.small{font-size:clamp(40px,9vw,60px);margin-bottom:22px}
 .tag{font-size:24px;margin:0 0 26px}
 .namebox{margin:0 0 22px}
+.themerow{display:flex;justify-content:flex-end;margin:0 0 24px}
+button.themebtn,button.themebtn[aria-pressed]{min-width:92px;background:var(--sheet);color:var(--ink);font-size:19px}
 .namebox label{font:400 26px var(--kid);margin-bottom:4px}
 .namebox input{--c:var(--ink);min-height:56px;font-size:24px;border-width:0 0 3px;border-radius:0;background:transparent;padding:0 4px}
 
@@ -63,7 +73,7 @@ label{display:block}
 .bigcode{margin:6px 0 14px;text-align:center;font:400 72px/1 var(--kid);letter-spacing:.14em;text-indent:.14em;color:var(--c)}
 .opt>.start{--c:var(--green);margin-top:14px}
 .chips{list-style:none;margin:16px 0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
-.chips li{padding:4px 14px;border:3px solid var(--ink);border-radius:14px 10px 16px 10px;background:#fff;font-size:20px}
+.chips li{padding:4px 14px;border:3px solid var(--ink);border-radius:14px 10px 16px 10px;background:var(--field);font-size:20px}
 .chips li.off,.board li.off{opacity:.45}
 .rounds{margin-top:8px;font:400 24px var(--kid)}
 .rounds select{--c:var(--ink);margin-top:6px;font-family:var(--hand)}
@@ -80,10 +90,10 @@ label{display:block}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}
 .stage{min-width:0}
 /* the frame is border + shadow only: no filter or transform touches the canvas, so coordinates stay exact */
-.canvaswrap{position:relative;overflow:hidden;border:2px solid var(--ink);border-radius:var(--r);background:#fff;line-height:0;box-shadow:4px 5px 0 rgba(45,42,38,.18)}
+.canvaswrap{position:relative;overflow:hidden;border:2px solid var(--ink);border-radius:var(--r);background:#fff;line-height:0;box-shadow:4px 5px 0 var(--drop)}
 canvas{display:block;width:100%;height:auto;aspect-ratio:6/5;touch-action:none;cursor:crosshair;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;padding:14px;overflow:auto;text-align:center;line-height:1.35;
-  background-color:rgba(247,240,223,.97);background-image:radial-gradient(rgba(70,50,20,.06) 1px,transparent 1.5px);background-size:7px 7px}
+  background-color:var(--veil);background-image:radial-gradient(var(--dot) 1px,transparent 1.5px);background-size:7px 7px}
 #overlay h2{margin:0;font:400 clamp(26px,6vw,40px)/1.1 var(--kid);color:var(--blue)}
 #overlay .words{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;width:100%}
 #overlay ol{list-style:none;margin:0;padding:6px 14px;width:min(340px,100%);text-align:left;font-size:19px;background:var(--sheet);border:3px solid var(--ink);border-radius:12px 16px 10px 18px}
@@ -109,7 +119,7 @@ aside{display:flex;flex-direction:column;gap:10px;min-width:0}
 .board li{display:flex;justify-content:space-between;gap:6px;padding:2px 0;font-size:19px}
 .board li b{font-weight:400;font-variant-numeric:tabular-nums}
 .board .me{color:var(--blue)}
-.board .tagd,.board .tagg{display:inline-block;margin-left:6px;padding:0 6px;border-radius:8px;font-size:14px;vertical-align:2px;color:#fff}
+.board .tagd,.board .tagg{display:inline-block;margin-left:6px;padding:0 6px;border-radius:8px;font-size:14px;vertical-align:2px;color:var(--on)}
 .board .tagd{background:var(--red)}.board .tagg{background:var(--green)}
 .chat{height:170px;padding:8px 14px;overflow:hidden;background:var(--sheet);border:3px solid var(--green);border-radius:16px 10px 18px 12px;font-size:17px;overscroll-behavior:contain}
 .chat p{margin:2px 0;overflow-wrap:anywhere}
@@ -179,7 +189,7 @@ aside{display:flex;flex-direction:column;gap:10px;min-width:0}
 /* game-over best/worst drawing */
 .showcase{margin:4px 0 8px;text-align:center}
 .showlabel{font:400 26px var(--kid);color:var(--red);margin-bottom:4px}
-.showcase canvas{display:block;width:100%;max-width:min(340px,calc(30vh * 1.2));height:auto;aspect-ratio:6/5;margin:0 auto;background:#fff;border:3px solid var(--ink);border-radius:10px 14px 10px 16px;cursor:pointer;touch-action:manipulation;transform:rotate(-1deg);box-shadow:3px 4px 0 rgba(45,42,38,.18)}
+.showcase canvas{display:block;width:100%;max-width:min(340px,calc(30vh * 1.2));height:auto;aspect-ratio:6/5;margin:0 auto;background:#fff;border:3px solid var(--ink);border-radius:10px 14px 10px 16px;cursor:pointer;touch-action:manipulation;transform:rotate(-1deg);box-shadow:3px 4px 0 var(--drop)}
 .showcap{margin-top:6px}
 .showhint:empty{display:none}
 /* tall overlays (game over with the best and worst drawings) scroll from the top instead of clipping it */

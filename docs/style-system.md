@@ -11,9 +11,18 @@ Both fonts are SIL OFL, self-hosted in `public/fonts/` and served by the static 
 
 ## Colours
 
+- Light values below; dark values are in the `:root[data-theme=dark]` block (see Themes).
 - Paper `--paper` #f7f0df with a faint 7px dot texture on `body`; card fill `--sheet` #fffbef; ink `--ink` #2d2a26; muted text `--muted` #6b6358.
 - Crayons: red `--red` #d9402f, blue `--blue` #2f6fb5, green `--green` #3f9b5a. The title uses all three (Cray / on / Breath).
 - The drawing palette is not part of the theme: it is the game's fixed list in `public/app.js` (`COLORS`) and must not change.
+
+## Themes (dark and light)
+
+Dark is the default; light is the original paper. Both themes share every rule in `public/style.css`. Only the custom properties change: `:root` holds the light values and `:root[data-theme=dark]` overrides them with warm charcoal paper (#2a2420), a lighter ink and lightened crayons. Never hard-code a colour in a rule; add a variable to both blocks instead. The extra variables are `--on` (text on a solid crayon button), `--field` (input and chip fill), `--hold` (placeholder), `--dot` (paper texture), `--shade` and `--drop` (shadows) and `--veil` (the overlay over the canvas). Body text, headings and button labels meet WCAG AA in both themes.
+
+`public/theme.js` is loaded as a blocking script in `<head>`, before the stylesheet, so the theme is set before first paint with no flash. It reads `localStorage['doodle-dash.theme']` (`dark` or `light`), falls back to dark when nothing is stored (the system light/dark preference is deliberately ignored), sets `data-theme` on `<html>` and updates `meta[name=theme-color]`. It is a file, not an inline script, because the Content-Security-Policy forbids inline scripts. The landing page toggle (`#themeBtn`, "Dark" / "Light", `aria-pressed` true in dark) calls `window.__theme.set()` from `app.js`.
+
+The drawing canvas and the game-over drawings stay white in both themes so every player sees the drawn colours the same way; the dark paper only frames them.
 
 ## Card component
 
