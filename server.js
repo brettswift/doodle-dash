@@ -41,6 +41,8 @@ const MAX_MSG = 4096, MAX_PER_IP = 24;
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; connect-src 'self' wss: ws:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'" };
 
+const { makeExportHandler } = require('./export');
+
 function bucket(cap, perSec) {
   let tokens = cap, last = Date.now();
   return () => { const n = Date.now(); tokens = Math.min(cap, tokens + (n - last) * perSec / 1000); last = n; if (tokens < 1) return false; tokens--; return true; };
@@ -79,7 +81,10 @@ function start(port, opts = {}) {
   });
   const socks = new Set();
 
+  const exportToken = Object.hasOwn(opts, 'exportToken') ? opts.exportToken : process.env.DOODLE_EXPORT_TOKEN;
+  const exportHandler = makeExportHandler({ dir: opts.dataDir ?? process.env.DATA_DIR, token: exportToken });
   const server = http.createServer((req, res) => {
+    if (exportHandler(req, res)) return;
     const url = (req.url || '').split('?')[0];
     if (url === '/version') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ sha: process.env.GIT_SHA || 'dev' })); }
     if (url === '/stats') { // public, aggregate and anonymous: no tokens, names, room codes or per-drawing data

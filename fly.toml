@@ -1,0 +1,41 @@
+# Doodle Dash production on Fly.io. One machine only: Doodle has a single writer.
+app = "doodle-dash-prod"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DATA_DIR = "/data"
+
+[mounts]
+  source = "doodle_data"
+  destination = "/data"
+  snapshot_retention = 30
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  max_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# Machine metadata (Fly has no AWS-style tags; this is the closest equivalent).
+[metadata]
+  project = "doodle-dash"
+  environment = "production"
+  owner = "brett"
+  managed_by = "hermes"
