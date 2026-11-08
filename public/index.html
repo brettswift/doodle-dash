@@ -15,12 +15,22 @@
   <p class="sub">Draw it. Guess it. 2–8 players.</p>
   <label>Your name<input id="name" maxlength="14" autocomplete="nickname" placeholder="Pat"></label>
   <button id="create" class="primary">Create room</button>
+  <button id="publicBtn" class="primary">Public lobby</button>
   <div class="or">or join a friend</div>
   <div class="row">
     <input id="code" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" aria-label="Room code">
     <button id="join">Join</button>
   </div>
   <p id="homeErr" class="err" role="alert"></p>
+</section>
+
+<section id="waiting" class="card narrow" hidden>
+  <h2>Public lobby</h2>
+  <p class="sub">Quick game: 3 rounds. Starts with 2 to 5 players.</p>
+  <div id="waitCount" class="bigcount">1 of 5 players</div>
+  <div id="waitTimer" class="bigtimer">Waiting for more players</div>
+  <p id="waitErr" class="err" role="alert"></p>
+  <button id="leaveWait">Leave</button>
 </section>
 
 <section id="lobby" class="card narrow" hidden>

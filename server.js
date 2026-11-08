@@ -3,8 +3,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { accept } = require('./ws');
-const { Game } = require('./game');
+const { Game, NAME_RE } = require('./game');
 const { TOPICS } = require('./words');
+const { Matchmaker } = require('./lobby');
+const PUBLIC_ROUNDS = 3; // quick game: 3 rounds, each round every player draws once
 
 const FILES = {
   '/': ['index.html', 'text/html; charset=utf-8'],
@@ -50,6 +52,31 @@ function start(port, opts = {}) {
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
   const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
+  // Public lobby: members are connection handles {name, send, enterRoom}. A started lobby becomes a normal
+  // room with rounds = 3 and is started at once by the server; nobody else can join it by code.
+  const mm = new Matchmaker({
+    firstMs: opts.lobbyFirstMs ?? (+process.env.LOBBY_FIRST_MS || undefined),
+    resetMs: opts.lobbyResetMs ?? (+process.env.LOBBY_RESET_MS || undefined),
+    onUpdate: (l) => {
+      const s = JSON.stringify({ t: 'public', n: l.members.length, max: mm.size, remaining: mm.remainingMs(l) });
+      for (const m of l.members) m.send(s);
+    },
+    onStart: (members) => {
+      const now = Date.now(), r = game.create(now);
+      if (!r) { for (const m of members) m.failPublic('Server busy, try later'); return; }
+      r.public = true; r.rotations = PUBLIC_ROUNDS;
+      const taken = new Set();
+      const seats = members.map((m) => {
+        let name = m.name, k = 1;
+        while (taken.has(name.toLowerCase())) { k++; name = m.name.slice(0, 11).trim() + ' ' + k; }
+        taken.add(name.toLowerCase());
+        return [m, r.join(name, now).p];
+      });
+      for (const [m, p] of seats) m.enterRoom(r, p, now);
+      r.handle(r.players.find((p) => p.id === r.hostId), { t: 'start' }, now);
+      opts.onPublicStart?.(r);
+    },
+  });
   const socks = new Set();
 
   const server = http.createServer((req, res) => {
@@ -77,13 +104,14 @@ function start(port, opts = {}) {
     perIp.set(ip, (perIp.get(ip) || 0) + 1);
     socks.add(socket); socket.on('close', () => socks.delete(socket));
     const observed = clientIp(req, trustProxy);
-    let room = null, player = null;
+    let room = null, player = null, waiting = null;
     const general = bucket(80, 60), guessB = bucket(4, 1), joinB = bucket(5, 0.2);
     let warned = 0;
     const conn = accept(req, socket, {
       maxPayload: MAX_MSG,
       onClose: () => {
         perIp.set(ip, Math.max(0, (perIp.get(ip) || 1) - 1));
+        if (waiting) { mm.leave(waiting); waiting = null; }
         if (room && player && player.send === send) room.detach(player, Date.now());
       },
       onMessage: (raw) => {
@@ -94,8 +122,10 @@ function start(port, opts = {}) {
         if (!general() || (m.t === 'guess' && !guessB())) return throttle();
         const now = Date.now();
         if (!player) {
-          if (!['create', 'join', 'resume'].includes(m.t)) return;
+          if (m.t === 'leavePublic') { if (waiting) { mm.leave(waiting); waiting = null; send(JSON.stringify({ t: 'publicLeft' })); } return; }
+          if (!['create', 'join', 'resume', 'public'].includes(m.t) || waiting) return;
           if (!joinB()) return throttle();
+          if (m.t === 'public') return queue(m);
           return enter(m, now);
         }
         room.handle(player, m, now);
@@ -106,6 +136,22 @@ function start(port, opts = {}) {
     const fail = (msg) => send(JSON.stringify({ t: 'error', msg }));
     const pinger = setInterval(() => { if (conn.idleMs() > 70000) conn.close(1001); else conn.ping(); }, 25000);
     socket.on('close', () => clearInterval(pinger));
+
+    // Validation and placement happen in one synchronous step (no await between count check and add).
+    function queue(m) {
+      const name = String(m.name ?? '').trim();
+      if (!NAME_RE.test(name)) return fail('Name: 1-14 letters, numbers, spaces');
+      waiting = {
+        name, send,
+        failPublic: (msg) => { waiting = null; fail(msg); },
+        enterRoom: (r, p, now) => {
+          waiting = null; room = r; player = p; p.ip = observed;
+          send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token, public: true }));
+          r.attach(p, send, now);
+        },
+      };
+      mm.join(waiting);
+    }
 
     function enter(m, now) {
       let r, p, rejoin = false;
@@ -122,6 +168,7 @@ function start(port, opts = {}) {
           const name = String(m.name ?? '');
           const back = r.rejoinByIp(name, observed);
           if (back) { p = back; rejoin = true; }
+          else if (r.public) return fail('That is a public game; use Public lobby');
           else {
             const j = r.join(name, now);
             if (j.err) return fail(j.err);
@@ -144,8 +191,8 @@ function start(port, opts = {}) {
   const timer = setInterval(() => game.tick(Date.now()), 250);
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
-      port: server.address().port, game,
-      close: () => { clearInterval(timer); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      port: server.address().port, game, mm,
+      close: () => { clearInterval(timer); mm.close(); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }
