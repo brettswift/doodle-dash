@@ -54,7 +54,8 @@ function start(port, opts = {}) {
   const perIp = new Map();
   const socks = new Set();
 
-  const exportHandler = makeExportHandler({ dir: opts.dataDir ?? process.env.DATA_DIR, token: opts.exportToken ?? process.env.DOODLE_EXPORT_TOKEN });
+  const exportToken = Object.hasOwn(opts, 'exportToken') ? opts.exportToken : process.env.DOODLE_EXPORT_TOKEN;
+  const exportHandler = makeExportHandler({ dir: opts.dataDir ?? process.env.DATA_DIR, token: exportToken });
   const server = http.createServer((req, res) => {
     if (exportHandler(req, res)) return;
     const url = (req.url || '').split('?')[0];
