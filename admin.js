@@ -1,0 +1,16 @@
+'use strict';
+const crypto = require('node:crypto');
+const same = (a, b) => {
+  if (!a || !b) return false;
+  const x = crypto.createHash('sha256').update(String(a)).digest();
+  const y = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(x, y);
+};
+function authorized(req, token) {
+  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
+  return !!token && !!m && same(m[1], token);
+}
+function adminPage() {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Crayon Breath admin</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem}input,button{font:inherit;padding:.5rem}pre{white-space:pre-wrap;background:#f3f3f3;padding:1rem;overflow:auto}table{border-collapse:collapse;width:100%}td,th{padding:.4rem;text-align:left;border-bottom:1px solid #ddd}</style><h1>Crayon Breath admin</h1><p>Use backup admin token. Token stays in this browser request only.</p><input id="t" type="password" autocomplete="current-password" placeholder="Admin token"><button id="go">Load</button><button id="csv" hidden>Export names CSV</button><p id="err"></p><div id="out"></div><script>let data;const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));function table(rows){return '<table>'+rows.map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join('')+'</tr>').join('')+'</table>'}go.onclick=async()=>{err.textContent='';try{let r=await fetch('/admin/analytics.json',{headers:{Authorization:'Bearer '+t.value}});if(!r.ok)throw Error(r.status===401?'Unauthorized':'Request failed');data=await r.json();let m=Object.entries(data.summary.modes).map(([k,v])=>[k,v.gamesStarted,v.gamesFinished,v.configuredRounds.average,JSON.stringify(v.configuredRounds.distribution),v.completedRounds.average,JSON.stringify(v.completedRounds.distribution)]);out.innerHTML='<h2>90-day analytics</h2><p>Consent-based anonymous browsers: '+data.summary.anonymousBrowsers+' · events: '+data.summary.events+'</p><h3>Games by mode</h3>'+table([['Mode','Started','Finished','Configured avg','Configured distribution','Completed avg','Completed distribution'],...m])+'<h3>Server now</h3><pre>'+esc(JSON.stringify(data.health,null,2))+'</pre><h3>Display names, not verified people</h3>'+table([['Name','First seen','Last seen','Sessions','Games','Coarse regions'],...data.summary.names.map(x=>[x.name,new Date(x.firstSeen).toLocaleString(),new Date(x.lastSeen).toLocaleString(),x.sessions,x.games,x.regions.join(', ')])]);csv.hidden=false}catch(e){err.textContent=e.message}};csv.onclick=()=>{let rows=[['name','first_seen','last_seen','sessions','games','regions'],...data.summary.names.map(x=>[x.name,new Date(x.firstSeen).toISOString(),new Date(x.lastSeen).toISOString(),x.sessions,x.games,x.regions.join('|')])];let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(v=>'"'+String(v).replaceAll('"','""')+'"').join(',')).join('\n')],{type:'text/csv'}));a.download='crayon-breath-names.csv';a.click()};</script>`;
+}
+module.exports = { authorized, adminPage };
