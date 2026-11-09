@@ -126,7 +126,8 @@ class Room {
         this.queue = []; this.rotation = 0; this.rotSize = 0;
         this.chat = []; this.showcase = [];
         this.analyticsStarted = true;
-        this.ctx.analytics?.event('gameStarted', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, players: this.players.length, participants: this.players.filter((q) => q.analytics).map((q) => ({ ...q.analytics, name: q.name })) });
+        this.ctx.analytics?.event('gameStarted', { gameId: this.gid, lobbyId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, players: this.players.length, participants: this.players.filter((q) => q.analytics).map((q) => ({ ...q.analytics, name: q.name })) });
+        this.ctx.onGameStart?.({ gameId: this.gid, mode: this.public ? 'public' : 'private', players: this.players.length, configuredRounds: this.rotations });
         return this.nextRound(now);
       }
       case 'rounds': {
@@ -142,6 +143,7 @@ class Room {
         this.players = this.players.filter((q) => q.send);
         if (!this.players.some((q) => q.id === this.hostId)) this.hostId = this.players[0].id;
         this.resetGame(); this.chat = [];
+        if (!this.public) this.ctx.analytics?.event('privateLobbyCreated', { lobbyId: this.gid });
         return this.broadcastState();
       }
       case 'pick': {
@@ -222,7 +224,7 @@ class Room {
     this.ctx.adapt.consider(this.ctx.history, this.ctx.topics, r.tid, now);
   }
   // room torn down or server stopping mid-turn
-  abort(now) { this.finishRec(now, 'abandoned'); this.ctx.topics.release(this.code); if (this.analyticsStarted && this.phase !== 'gameOver') this.ctx.analytics?.event('gameAbandoned', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.rotation, drawingTurns: this.drawn, players: this.players.length }); }
+  abort(now) { this.finishRec(now, 'abandoned'); this.ctx.topics.release(this.code); if (!this.public && !this.analyticsStarted) this.ctx.analytics?.event('privateLobbyClosed', { lobbyId: this.gid, reason: 'expired-or-shutdown' }); if (this.analyticsStarted && this.phase !== 'gameOver') this.ctx.analytics?.event('gameAbandoned', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.rotation, drawingTurns: this.drawn, players: this.players.length }); }
   gameOver() {
     this.phase = 'gameOver'; this.deadline = 0; this.word = this.word;
     this.ctx.analytics?.event('gameEnded', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.rotation, drawingTurns: this.drawn, players: this.players.length });
@@ -284,7 +286,7 @@ class Room {
 }
 
 class Game {
-  constructor(opts = {}) { this.rooms = new Map(); this.ctx = makeCtx(opts); }
+  constructor(opts = {}) { this.rooms = new Map(); this.ctx = { ...makeCtx(opts), onGameStart: opts.onGameStart }; }
   // graceful stop: close in-flight drawings as abandoned and persist state
   shutdown(now = Date.now()) { for (const r of this.rooms.values()) r.abort(now); this.ctx.history.close(); }
   create(now) {

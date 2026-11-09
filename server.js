@@ -8,6 +8,7 @@ const { TOPICS } = require('./words');
 const { Matchmaker } = require('./lobby');
 const { Analytics, anonId, clean } = require('./analytics');
 const { authorized, adminPage } = require('./admin');
+const { makeNotifier } = require('./notifier');
 const PUBLIC_ROUNDS = 3; // quick game: 3 rounds, each round every player draws once
 
 const FILES = {
@@ -71,10 +72,12 @@ function bucket(cap, perSec) {
 
 function start(port, opts = {}) {
   const trustProxy = opts.trustProxy !== false;
+  const qa = opts.qa ?? process.env.NODE_ENV === 'test';
   const pub = {};
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
-  const analytics = new Analytics({ dir: opts.dataDir ?? process.env.DATA_DIR, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', log: (...a) => console.error('[doodle]', ...a) });
-  const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, analytics, log: (...a) => console.error('[doodle]', ...a) });
+  const analytics = new Analytics({ dir: opts.dataDir ?? process.env.DATA_DIR, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
+  const notifier = makeNotifier({ baseUrl: opts.ntfyBaseUrl ?? process.env.NTFY_BASE_URL, topic: opts.ntfyTopic ?? process.env.NTFY_TOPIC ?? 'crayon_breath', fetchImpl: opts.fetchImpl, enabled: !qa && (opts.alertsEnabled ?? process.env.NTFY_ALERTS_ENABLED === 'true'), log: (...a) => console.error('[doodle]', ...a) });
+  const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
   const maxPerIp = opts.maxPerIp ?? MAX_PER_IP;
   const maxSockets = opts.maxSockets ?? (+process.env.MAX_SOCKETS || MAX_SOCKETS);
@@ -121,7 +124,7 @@ function start(port, opts = {}) {
       if (!authorized(req, exportToken)) { res.writeHead(exportToken ? 401 : 404, { 'cache-control': 'no-store' }); return res.end(exportToken ? 'unauthorized' : 'not found'); }
       const activePlayers = [...game.rooms.values()].reduce((n, r) => n + r.connected.length, 0);
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ summary: analytics.summary(), health: analytics.health({ openSockets: socks.size, activeRooms: game.rooms.size, activePlayers, publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0) }) }));
+      return res.end(JSON.stringify({ summary: analytics.summary(), health: analytics.health({ openSockets: socks.size, activeRooms: game.rooms.size, activePlayers, publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: notifier.configured, qa }) }));
     }
     if (url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
     const f = req.method === 'GET' || req.method === 'HEAD' ? pub[url] : null;
@@ -208,6 +211,7 @@ function start(port, opts = {}) {
         const j = r.join(String(m.name ?? ''), now);
         if (j.err) { game.rooms.delete(r.code); return fail(j.err); }
         p = j.p;
+        analytics.event('privateLobbyCreated', { lobbyId: r.gid });
       } else {
         r = game.get(m.code);
         if (!r) return fail('No such room');
