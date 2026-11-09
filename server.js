@@ -31,17 +31,24 @@ function isPublicIp(ip) {
   return false;
 }
 const isPrivatePeer = (ip) => net.isIP(ip) !== 0 && !isPublicIp(ip);
-// Observed client address, or null (fail closed). X-Real-IP is honoured only when the TCP peer is a
-// private/loopback address (the in-cluster ingress-nginx, which overwrites it with $remote_addr and is
-// not configured with use-forwarded-headers). X-Forwarded-For is never read. Ingress/pod IPs yield null.
-function clientIp(req, trustProxy = true) {
+// Real client address, or null (fail closed). Forwarding headers are honoured only when the TCP peer is a
+// private/loopback address (Fly proxy, in-cluster ingress); a public peer is always its own identity.
+// Order: CF-Connecting-IP (Cloudflare), Fly-Client-IP, X-Real-IP; each must pass net.isIP. X-Forwarded-For is never read.
+function resolveClient(req, trustProxy = true) {
   const peer = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
-  if (isPublicIp(peer)) return peer;
-  if (!trustProxy || !isPrivatePeer(peer)) return null;
-  const h = req.headers['x-real-ip'];
-  return typeof h === 'string' && isPublicIp(h.trim()) ? h.trim() : null;
+  if (!trustProxy || !isPrivatePeer(peer)) return net.isIP(peer) ? peer : null;
+  for (const name of ['cf-connecting-ip', 'fly-client-ip', 'x-real-ip']) {
+    const h = req.headers[name];
+    if (typeof h === 'string' && net.isIP(h.trim())) return h.trim().replace(/^::ffff:/i, '');
+  }
+  return peer || null;
 }
-const MAX_MSG = 4096, MAX_PER_IP = 24;
+// Observed public client address for reconnect matching, or null. Never logged or persisted.
+function clientIp(req, trustProxy = true) {
+  const ip = resolveClient(req, trustProxy);
+  return ip && isPublicIp(ip) ? ip : null;
+}
+const MAX_MSG = 4096, MAX_PER_IP = 40, MAX_SOCKETS = 600;
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; connect-src 'self' wss: ws:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'" };
 
@@ -58,6 +65,8 @@ function start(port, opts = {}) {
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
   const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
+  const maxPerIp = opts.maxPerIp ?? MAX_PER_IP;
+  const maxSockets = opts.maxSockets ?? (+process.env.MAX_SOCKETS || MAX_SOCKETS);
   // Public lobby: members are connection handles {name, send, enterRoom}. A started lobby becomes a normal
   // room with rounds = 3 and is started at once by the server; nobody else can join it by code.
   const mm = new Matchmaker({
@@ -106,8 +115,11 @@ function start(port, opts = {}) {
     const host = req.headers.host, origin = req.headers.origin;
     let okOrigin = true;
     if (origin) { try { okOrigin = new URL(origin).host === host; } catch { okOrigin = false; } }
-    const ip = String(req.headers['x-real-ip'] || req.socket.remoteAddress || '');
-    if ((req.url || '').split('?')[0] !== '/ws' || !okOrigin || (perIp.get(ip) || 0) >= MAX_PER_IP) {
+    const ip = resolveClient(req, trustProxy) || 'unknown';
+    if (socks.size >= maxSockets) {
+      return socket.end('HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nConnection: close\r\n\r\n');
+    }
+    if ((req.url || '').split('?')[0] !== '/ws' || !okOrigin || (perIp.get(ip) || 0) >= maxPerIp) {
       return socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     }
     perIp.set(ip, (perIp.get(ip) || 0) + 1);
@@ -119,7 +131,8 @@ function start(port, opts = {}) {
     const conn = accept(req, socket, {
       maxPayload: MAX_MSG,
       onClose: () => {
-        perIp.set(ip, Math.max(0, (perIp.get(ip) || 1) - 1));
+        const left = (perIp.get(ip) || 1) - 1;
+        if (left > 0) perIp.set(ip, left); else perIp.delete(ip);
         if (waiting) { mm.leave(waiting); waiting = null; }
         if (room && player && player.send === send) room.detach(player, Date.now());
       },
@@ -206,7 +219,7 @@ function start(port, opts = {}) {
   });
 }
 
-module.exports = { start, clientIp };
+module.exports = { start, clientIp, resolveClient };
 if (require.main === module) {
   start(+process.env.PORT || 8080).then((s) => {
     console.log('doodle-dash listening on', s.port, process.env.DATA_DIR ? `data=${process.env.DATA_DIR}` : '(no DATA_DIR: history not persisted)');
