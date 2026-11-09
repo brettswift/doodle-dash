@@ -37,4 +37,10 @@ A dedicated domain later only needs another `fly certs add` and DNS record; noth
 
 ## Export endpoint and secrets
 
-GET /admin/export returns a tar.gz of history.jsonl and state.json. It needs `Authorization: Bearer <token>` matching the DOODLE_EXPORT_TOKEN secret, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
+GET /admin/export returns a tar.gz of history.jsonl and state.json. It needs an Authorization bearer token matching `DOODLE_EXPORT_TOKEN`, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
+
+## Game-start ntfy alerts and QA
+
+Alerts are off unless both `NTFY_ALERTS_ENABLED=true` and `NTFY_BASE_URL` are configured. `NTFY_TOPIC` defaults to `crayon_breath`. Confirm owner controls a private/authenticated topic before enabling; messages are aggregate-only: mode, participant count, and configured rounds. Delivery has bounded retries and can duplicate after an ambiguous network failure; never use diagnostic messages because only real game starts notify.
+
+Production metrics exclude events marked server-side as QA. Local and integration tests run with `NODE_ENV=test`, which disables alerts and tags any explicitly enabled analytics as QA. Run test fixtures against a temporary `DATA_DIR`; never use production hostname as QA proof because it routes to production. Private lobby conversion treats open lobbies as waiting, emits closed-without-start only on expiry/shutdown, and classifies lobbies open during a process crash before this release as historical unclassified data.
