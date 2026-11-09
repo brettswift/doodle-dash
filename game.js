@@ -18,7 +18,7 @@ const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const OUTCOME = { 'time up': 'timeup', 'everyone guessed': 'all', 'drawer left': 'drawerLeft' };
 const makeCtx = (opts = {}) => {
   const history = new History({ dir: opts.dataDir || null, log: opts.log });
-  return { history, topics: new Topics(history), adapt };
+  return { history, topics: new Topics(history), adapt, analytics: opts.analytics };
 };
 
 class Room {
@@ -37,7 +37,7 @@ class Room {
   }
   resetGame() {
     this.phase = 'lobby'; this.queue = []; this.drawn = 0; this.rotation = 0; this.rotSize = 0; this.diff = null; this.gid = crypto.randomBytes(4).toString('hex');
-    this.drawerId = null; this.word = null; this.choices = null; this.strokes = []; this.pts = 0;
+    this.drawerId = null; this.word = null; this.choices = null; this.strokes = []; this.pts = 0; this.analyticsStarted = false;
     this.deadline = 0; this.drawerGone = 0; this.showcase = [];
     for (const p of this.players) { p.score = 0; p.gain = 0; p.guessed = false; }
   }
@@ -125,6 +125,8 @@ class Room {
         this.players = this.players.filter((q) => q.send);
         this.queue = []; this.rotation = 0; this.rotSize = 0;
         this.chat = []; this.showcase = [];
+        this.analyticsStarted = true;
+        this.ctx.analytics?.event('gameStarted', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, players: this.players.length, participants: this.players.filter((q) => q.analytics).map((q) => ({ ...q.analytics, name: q.name })) });
         return this.nextRound(now);
       }
       case 'rounds': {
@@ -220,8 +222,12 @@ class Room {
     this.ctx.adapt.consider(this.ctx.history, this.ctx.topics, r.tid, now);
   }
   // room torn down or server stopping mid-turn
-  abort(now) { this.finishRec(now, 'abandoned'); this.ctx.topics.release(this.code); }
-  gameOver() { this.phase = 'gameOver'; this.deadline = 0; this.word = this.word; this.broadcastState(); }
+  abort(now) { this.finishRec(now, 'abandoned'); this.ctx.topics.release(this.code); if (this.analyticsStarted && this.phase !== 'gameOver') this.ctx.analytics?.event('gameAbandoned', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.rotation, drawingTurns: this.drawn, players: this.players.length }); }
+  gameOver() {
+    this.phase = 'gameOver'; this.deadline = 0; this.word = this.word;
+    this.ctx.analytics?.event('gameEnded', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.rotation, drawingTurns: this.drawn, players: this.players.length });
+    this.broadcastState();
+  }
 
   draw(p, m, err) {
     if (this.phase !== 'drawing' || p.id !== this.drawerId) return;
