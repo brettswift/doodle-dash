@@ -34,7 +34,7 @@ test('export: no token -> 401, wrong token -> 401, right token -> tar.gz', async
     const ok = await fetch(url, { headers: { authorization: 'Bearer s3cret-token' } });
     assert.equal(ok.status, 200);
     const files = untar(Buffer.from(await ok.arrayBuffer()));
-    assert.deepEqual(Object.keys(files).sort(), ['history.jsonl', 'state.json']);
+    assert.deepEqual(Object.keys(files).sort(), ['analytics.jsonl', 'history.jsonl', 'state.json']);
     assert.equal(typeof files['history.jsonl'], 'string');
     assert.equal(JSON.parse(files['state.json']).v, 1);
   } finally { s.close(); }
