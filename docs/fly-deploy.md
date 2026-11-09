@@ -18,7 +18,7 @@ Fly takes a daily volume snapshot and keeps 30 days (snapshot_retention in fly.t
 
 ## Restore from a pulled backup
 
-Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl and state.json. To restore, unpack the chosen file in a temp directory and copy both files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl` and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
+Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl, analytics.jsonl, and state.json. To restore, unpack the chosen file in a temp directory and copy these files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl`, `put analytics.jsonl /data/analytics.jsonl`, and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
 
 ## DNS cut-over
 

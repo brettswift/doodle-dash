@@ -35,9 +35,10 @@ function readHistory(file) {
 
 function buildArchive(dir) {
   const hist = readHistory(path.join(dir, 'history.jsonl'));
+  const analytics = readHistory(path.join(dir, 'analytics.jsonl'));
   let state; // state.json is replaced by atomic rename, so a read sees one whole version
   try { state = fs.readFileSync(path.join(dir, 'state.json')); } catch (e) { if (e.code !== 'ENOENT') throw e; state = Buffer.from('{}'); }
-  return zlib.gzipSync(Buffer.concat([tarEntry('history.jsonl', hist), tarEntry('state.json', state), Buffer.alloc(1024)]));
+  return zlib.gzipSync(Buffer.concat([tarEntry('history.jsonl', hist), tarEntry('analytics.jsonl', analytics), tarEntry('state.json', state), Buffer.alloc(1024)]));
 }
 
 // Returns handler(req,res) -> true if the request was an export request (handled).
