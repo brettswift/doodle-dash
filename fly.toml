@@ -8,6 +8,10 @@ primary_region = "sjc"
 [env]
   PORT = "8080"
   DATA_DIR = "/data"
+  APP_ENV = "production"
+  NTFY_ALERTS_ENABLED = "true"
+  NTFY_BASE_URL = "https://ntfy.sh"
+  NTFY_TOPIC = "crayon_breath"
 
 [mounts]
   source = "doodle_data"
