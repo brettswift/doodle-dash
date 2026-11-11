@@ -9,7 +9,7 @@ const { start } = require('../server');
 const tmp = () => fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dd-analytics-'));
 test('analytics dashboard requires export token and exposes only consent-based local records', async () => {
   const dir = tmp();
-  const s = await start(0, { dataDir: dir, exportToken: 'token', analyticsEnabled: true });
+  const s = await start(0, { dataDir: dir, exportToken: 'token', analyticsEnabled: true, qa: false });
   const base = `http://127.0.0.1:${s.port}`;
   try {
     s.analytics.event('nameEntered', { browserId: 'a'.repeat(32), sessionId: 'b'.repeat(32), name: 'Pat', country: 'CA', region: 'AB' });

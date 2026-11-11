@@ -16,6 +16,7 @@ const FILES = {
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/geom.js': ['geom.js', 'text/javascript; charset=utf-8'],
   '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
+  '/admin/dashboard.js': ['admin.js', 'text/javascript; charset=utf-8'],
   '/privacy': ['privacy.html', 'text/html; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
@@ -72,7 +73,7 @@ function bucket(cap, perSec) {
 
 function start(port, opts = {}) {
   const trustProxy = opts.trustProxy !== false;
-  const qa = opts.qa ?? process.env.NODE_ENV === 'test';
+  const qa = opts.qa ?? (process.env.NODE_ENV === 'test' || process.env.APP_ENV === 'qa' || (!process.env.FLY_APP_NAME && process.env.APP_ENV !== 'production'));
   const pub = {};
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
   const analytics = new Analytics({ dir: opts.dataDir ?? process.env.DATA_DIR, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
@@ -123,8 +124,9 @@ function start(port, opts = {}) {
     if (url === '/admin/analytics.json') {
       if (!authorized(req, exportToken)) { res.writeHead(exportToken ? 401 : 404, { 'cache-control': 'no-store' }); return res.end(exportToken ? 'unauthorized' : 'not found'); }
       const activePlayers = [...game.rooms.values()].reduce((n, r) => n + r.connected.length, 0);
+      const records = analytics.records();
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ summary: analytics.summary(), health: analytics.health({ openSockets: socks.size, activeRooms: game.rooms.size, activePlayers, publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: notifier.configured, qa }) }));
+      return res.end(JSON.stringify({ summary: analytics.summary(records), operations: analytics.operations(records), health: analytics.health({ ...runtime(), activePlayers }) }));
     }
     if (url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
     const f = req.method === 'GET' || req.method === 'HEAD' ? pub[url] : null;
@@ -182,7 +184,7 @@ function start(port, opts = {}) {
     });
     if (!conn) { perIp.set(ip, Math.max(0, (perIp.get(ip) || 1) - 1)); return; }
     const send = (s) => conn.send(s);
-    const fail = (msg) => send(JSON.stringify({ t: 'error', msg }));
+    const fail = (msg) => { analytics.event('error', { category: 'rejected-action' }); send(JSON.stringify({ t: 'error', msg })); };
     const pinger = setInterval(() => { if (conn.idleMs() > 70000) conn.close(1001); else conn.ping(); }, 25000);
     socket.on('close', () => clearInterval(pinger));
 
@@ -195,6 +197,7 @@ function start(port, opts = {}) {
         failPublic: (msg) => { waiting = null; fail(msg); },
         enterRoom: (r, p, now) => {
           waiting = null; room = r; player = p; p.ip = observed;
+          if (identity) { p.analytics = identity; analytics.event('nameEntered', { ...identity, name: p.name, mode: 'public' }); }
           send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token, public: true }));
           r.attach(p, send, now);
         },
@@ -244,11 +247,17 @@ function start(port, opts = {}) {
     }
   });
 
+  function runtime() {
+    return { openSockets: socks.size, activeRooms: game.rooms.size,
+      activePlayers: [...game.rooms.values()].reduce((n, r) => n + r.connected.length, 0),
+      publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: notifier.configured, ntfy: { ...notifier.status }, qa };
+  }
   const timer = setInterval(() => { analytics.tick(); game.tick(Date.now()); }, 250);
+  const sampleTimer = setInterval(() => analytics.sample(runtime()), opts.sampleMs ?? 60000);
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
       port: server.address().port, game, mm, analytics,
-      close: () => { clearInterval(timer); mm.close(); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      close: () => { clearInterval(timer); clearInterval(sampleTimer); mm.close(); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }
