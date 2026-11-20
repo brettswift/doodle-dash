@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const { MULT10 } = require('./words');
 const { History } = require('./history');
 const { Topics } = require('./topics');
+const { Archive } = require('./archive');
 const adapt = require('./adapt');
 const DEFAULT_ROTATIONS = 5, MIN_ROTATIONS = 1, MAX_ROTATIONS = 10;
 // Points: base time-decay points times the difficulty multiplier (tenths), rounded half up to an integer.
@@ -18,7 +19,7 @@ const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const OUTCOME = { 'time up': 'timeup', 'everyone guessed': 'all', 'drawer left': 'drawerLeft' };
 const makeCtx = (opts = {}) => {
   const history = new History({ dir: opts.dataDir || null, log: opts.log });
-  return { history, topics: new Topics(history), adapt, analytics: opts.analytics };
+  return { history, topics: new Topics(history), adapt, analytics: opts.analytics, archive: new Archive({ dir: opts.dataDir || null, log: opts.log, ...opts.archive }) };
 };
 
 class Room {
@@ -104,7 +105,10 @@ class Room {
       v.rotTurn = this.rotSize - this.queue.length; v.rotTurns = this.rotSize;
     }
     if (withStrokes) v.strokes = this.strokes;
-    if (this.phase === 'gameOver') v.showcase = this.bestWorst();
+    if (this.phase === 'gameOver') {
+      const bw = this.bestWorst(), pick = (x) => x && ({ name: x.name, word: x.word, diff: x.diff, gain: x.gain, strokes: x.strokes });
+      v.showcase = bw && { best: pick(bw.best), worst: pick(bw.worst) };
+    }
     if (this.phase === 'choosing' && you) v.choices = this.choices.map((c) => ({ word: c.word, diff: c.diff, mult: MULT10[c.diff] / 10 }));
     if (showWord && this.word) v.word = this.word;
     // difficulty is shown to the drawer while drawing and to everyone only once the word is revealed
@@ -182,7 +186,7 @@ class Room {
   }
   beginDrawing(c, now) {
     this.chat = this.chat.filter((m) => m.k !== 'chat'); // the word storm shows this round's guesses only
-    this.word = c.word; this.diff = c.diff; this.choices = null;
+    this.word = c.word; this.diff = c.diff; this.curTid = c.id; this.choices = null;
     // Only the chosen topic is recorded; unchosen offers were merely held and are released here.
     this.ctx.topics.commit(this.code, c.id);
     const el = this.connected.filter((q) => q.id !== this.drawerId).map((q) => q.id);
@@ -207,7 +211,7 @@ class Room {
   keepDrawing() {
     const d = this.drawer();
     if (!d || !this.word || !this.strokes.length) return;
-    this.showcase.push({ name: d.name, word: this.word, diff: this.diff, gain: d.gain, strokes: this.strokes });
+    this.showcase.push({ name: d.name, word: this.word, tid: this.curTid, diff: this.diff, gain: d.gain, strokes: this.strokes });
     if (this.showcase.length > 100) this.showcase.shift();
   }
   // Best = most points earned by the drawer; worst = fewest, always a different drawing. One drawing gives only a best.
@@ -216,8 +220,7 @@ class Room {
     if (!list.length) return null;
     let bi = 0; list.forEach((x, i) => { if (x.gain > list[bi].gain) bi = i; });
     let wi = -1; list.forEach((x, i) => { if (i !== bi && (wi < 0 || x.gain <= list[wi].gain)) wi = i; });
-    const pick = (x) => ({ name: x.name, word: x.word, diff: x.diff, gain: x.gain, strokes: x.strokes });
-    return { best: pick(list[bi]), worst: wi < 0 ? null : pick(list[wi]) };
+    return { best: list[bi], worst: wi < 0 ? null : list[wi] };
   }
   // Anonymous per-drawing telemetry: no names/ids/IPs; times are ms since the drawing began.
   finishRec(now, out) {
@@ -230,6 +233,10 @@ class Room {
   gameOver() {
     this.phase = 'gameOver'; this.deadline = 0; this.word = this.word;
     this.ctx.analytics?.event('gameEnded', { gameId: this.gid, mode: this.public ? 'public' : 'private', configuredRounds: this.rotations, completedRounds: this.completedRotations, drawingTurns: this.drawn, players: this.players.length });
+    // Persist the exact selection shown to players; failures are logged, never thrown into gameplay.
+    try {
+      void this.ctx.archive?.save({ gameId: this.gid, mode: this.public ? 'public' : 'private', players: this.players.length }, this.bestWorst());
+    } catch (e) { console.error('[doodle] archive error', e.message); }
     this.broadcastState();
   }
 
