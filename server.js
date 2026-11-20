@@ -129,6 +129,13 @@ function start(port, opts = {}) {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ summary: analytics.summary(records), operations: analytics.operations(records), health: analytics.health({ ...runtime(), activePlayers }) }));
     }
+    if (url === '/admin/drawings.json' || /^\/admin\/drawings\/[0-9a-f]{8}\.json$/.test(url)) { // private best/worst archive, bearer token only
+      if (!authorized(req, exportToken)) { res.writeHead(exportToken ? 401 : 404, { 'cache-control': 'no-store' }); return res.end(exportToken ? 'unauthorized' : 'not found'); }
+      const arc = game.ctx.archive;
+      const body = url === '/admin/drawings.json' ? { stats: arc.stats(), games: arc.list() } : arc.read(url.slice(16, 24));
+      res.writeHead(body ? 200 : 404, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(body || { error: 'not found' }));
+    }
     if (url === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
     const f = req.method === 'GET' || req.method === 'HEAD' ? pub[url] : null;
     if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }
