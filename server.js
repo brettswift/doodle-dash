@@ -149,7 +149,9 @@ function start(port, opts = {}) {
     perIp.set(ip, (perIp.get(ip) || 0) + 1);
     socks.add(socket); socket.on('close', () => socks.delete(socket));
     const observed = clientIp(req, trustProxy);
-    let room = null, player = null, waiting = null, identity = null;
+    let room = null, player = null, waiting = null;
+    // Default identity covers clients (native ws) that never send an analytics message; web client upgrades it once.
+    let identity = { sessionId: anonId(), ...coarseLocation(req, trustProxy) }, identified = false;
     const general = bucket(80, 60), guessB = bucket(4, 1), joinB = bucket(5, 0.2);
     let warned = 0;
     const conn = accept(req, socket, {
@@ -157,7 +159,7 @@ function start(port, opts = {}) {
       onClose: () => {
         const left = (perIp.get(ip) || 1) - 1;
         if (left > 0) perIp.set(ip, left); else perIp.delete(ip);
-        if (waiting) { analytics.event('queueLeft', identity || {}); mm.leave(waiting); waiting = null; }
+        if (waiting) { analytics.event('queueLeft', identity); mm.leave(waiting); waiting = null; }
         if (room && player && player.send === send) room.detach(player, Date.now());
       },
       onMessage: (raw) => {
@@ -168,12 +170,12 @@ function start(port, opts = {}) {
         if (!general() || (m.t === 'guess' && !guessB())) return throttle();
         const now = Date.now();
         if (!player) {
-          if (m.t === 'analytics' && !identity) {
-            if (m.consent !== true) return;
+          if (m.t === 'analytics') {
+            if (identified) return; identified = true;
             identity = { browserId: anonId(m.browserId), sessionId: anonId(m.sessionId), timezone: clean(m.timezone, 64), language: clean(m.language, 32), ...coarseLocation(req, trustProxy) };
             analytics.event('landing', identity); return;
           }
-          if (m.t === 'leavePublic') { if (waiting) { analytics.event('queueLeft', identity || {}); mm.leave(waiting); waiting = null; send(JSON.stringify({ t: 'publicLeft' })); } return; }
+          if (m.t === 'leavePublic') { if (waiting) { analytics.event('queueLeft', identity); mm.leave(waiting); waiting = null; send(JSON.stringify({ t: 'publicLeft' })); } return; }
           if (!['create', 'join', 'resume', 'public'].includes(m.t) || waiting) return;
           if (!joinB()) return throttle();
           if (m.t === 'public') return queue(m);
@@ -197,13 +199,13 @@ function start(port, opts = {}) {
         failPublic: (msg) => { waiting = null; fail(msg); },
         enterRoom: (r, p, now) => {
           waiting = null; room = r; player = p; p.ip = observed;
-          if (identity) { p.analytics = identity; analytics.event('nameEntered', { ...identity, name: p.name, mode: 'public' }); }
+          p.analytics = identity; analytics.event('nameEntered', { ...identity, name: p.name, mode: 'public' });
           send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token, public: true }));
           r.attach(p, send, now);
         },
       };
       mm.join(waiting);
-      if (identity) analytics.event('queueEntered', { ...identity, name, mode: 'public' });
+      analytics.event('queueEntered', { ...identity, name, mode: 'public' });
     }
 
     function enter(m, now) {
@@ -235,11 +237,9 @@ function start(port, opts = {}) {
         }
       }
       room = r; player = p;
-      if (identity) {
-        p.analytics = identity;
-        analytics.event('nameEntered', { ...identity, name: p.name, mode: r.public ? 'public' : 'private' });
-        analytics.event('intent', { ...identity, mode: m.t === 'create' ? 'private-create' : m.t === 'join' ? 'private-join' : 'resume' });
-      }
+      p.analytics = identity;
+      analytics.event('nameEntered', { ...identity, name: p.name, mode: r.public ? 'public' : 'private' });
+      analytics.event('intent', { ...identity, mode: m.t === 'create' ? 'private-create' : m.t === 'join' ? 'private-join' : 'resume' });
       send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token }));
       p.ip = observed;
       r.attach(p, send, now);
