@@ -284,7 +284,7 @@ test('abuse: oversized frames closed, bad json ignored, floods rate limited, no 
     assert.equal(a.status, 200, r);
     if (r.includes('.woff2')) assert.equal(a.headers.get('content-type'), 'font/woff2');
   }
-  assert.doesNotMatch(html, /https?:\/\//);
+  assert.doesNotMatch(html.replace(/<(meta|link rel="canonical")[^>]*>/g, ''), /https?:\/\//); // only social/canonical metadata may be absolute
 });
 
 test('drawer gets a difficulty-scaled bonus when everyone guesses; none when a guesser misses or only one guesses', async () => {

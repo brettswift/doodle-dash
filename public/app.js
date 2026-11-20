@@ -25,9 +25,9 @@ function connect() {
   const mine = ws;
   ws.onopen = () => {
     retry = 0; $('banner').hidden = true;
-    if ($('analyticsConsent').checked) {
+    {
       let browserId; try { browserId = localStorage.getItem(ANALYTICS_KEY); if (!browserId) { browserId = crypto.randomUUID().replaceAll('-', ''); localStorage.setItem(ANALYTICS_KEY, browserId); } } catch {}
-      send({ t: 'analytics', consent: true, browserId, sessionId: crypto.randomUUID().replaceAll('-', ''), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, language: navigator.language });
+      send({ t: 'analytics', browserId, sessionId: crypto.randomUUID().replaceAll('-', ''), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, language: navigator.language });
     }
     const first = pendingEnter || (sess && { t: 'resume', code: sess.code, token: sess.token });
     pendingEnter = null;
@@ -361,8 +361,6 @@ syncTheme();
 
 // ---------- boot ----------
 try { $('name').value = localStorage.getItem(NAMEKEY) || ''; } catch {}
-try { $('analyticsConsent').checked = localStorage.getItem('crayon-breath-analytics-consent') === 'yes'; } catch {}
-$('analyticsConsent').onchange = () => { try { localStorage.setItem('crayon-breath-analytics-consent', $('analyticsConsent').checked ? 'yes' : 'no'); } catch {} };
 const q = new URLSearchParams(location.search).get('room');
 if (q) $('code').value = q.toUpperCase().slice(0, 4);
 if (sess && !q) { show('home'); connect(); } else show('home');

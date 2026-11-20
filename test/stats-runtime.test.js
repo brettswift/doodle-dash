@@ -74,7 +74,7 @@ function client(port) {
   return { ws, open: new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; }), send: (m) => ws.send(JSON.stringify(m)), wait: (fn) => until(() => messages.find(fn)) };
 }
 
-test('real isolated HTTP transport alerts only private/public starts; public consent reaches game analytics', async () => {
+test('real isolated HTTP transport alerts only private/public starts; public usernames reach game analytics regardless of legacy consent message', async () => {
   const deliveries = [];
   const receiver = http.createServer((req, res) => { let body = ''; req.on('data', (part) => body += part); req.on('end', () => { deliveries.push({ path: req.url, body }); res.writeHead(200); res.end('{}'); }); });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
@@ -97,7 +97,7 @@ test('real isolated HTTP transport alerts only private/public starts; public con
     assert.match(deliveries[1].body, /automatic public lobby started: 2 players, 3 rounds/);
     for (const x of deliveries) { assert.equal(x.path, '/isolated_only'); assert.doesNotMatch(x.body, /Pat|Sam|Consented|NoConsent|browserId|country/); }
     const e = s.analytics.records().find((x) => x.type === 'gameStarted' && x.mode === 'public');
-    assert.equal(e.participants.length, 1); assert.equal(e.participants[0].browserId, 'c'.repeat(32));
+    assert.deepEqual(e.participants.map((x) => x.name).sort(), ['Consented', 'NoConsent']); assert.equal(e.participants.find((x) => x.name === 'Consented').browserId, 'c'.repeat(32)); assert.ok(e.participants.every((x) => x.sessionId));
     assert.deepEqual(s.analytics.summary().modes.public.consentedConversion, { enteredBrowsers: 1, startedBrowsers: 1, percent: 100 });
     const response = await fetch(`http://127.0.0.1:${s.port}/admin/analytics.json`, { headers: { Authorization: 'Bearer test' } });
     const data = await response.json();
