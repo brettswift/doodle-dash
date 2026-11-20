@@ -19,6 +19,7 @@ const FILES = {
   '/admin/dashboard.js': ['admin.js', 'text/javascript; charset=utf-8'],
   '/privacy': ['privacy.html', 'text/html; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/social-preview.png': ['social-preview.png', 'image/png'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
   '/fonts/Schoolbell-400.woff2': ['fonts/Schoolbell-400.woff2', 'font/woff2'],
   '/fonts/PatrickHand-400.woff2': ['fonts/PatrickHand-400.woff2', 'font/woff2'],
