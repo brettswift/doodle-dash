@@ -98,3 +98,16 @@ test('privacy page states analytics is kept 6 months', () => {
   assert.ok(/6 months/.test(priv));
   assert.ok(!/up to 90 days/.test(priv));
 });
+
+test('private lobby status can come from an explicit live-lobby set instead of the process run id', () => {
+  const { Analytics } = require('../analytics');
+  const mem = []; const store = { addEvent: (e) => mem.push(e), events: () => mem, eventBytes: () => 0 };
+  const a = new Analytics({ store, enabled: true, qa: false, log: () => {} });
+  mem.push({ v: 1, at: Date.now(), type: 'privateLobbyCreated', lobbyId: 'L1', runId: 'some-other-object' });
+  mem.push({ v: 1, at: Date.now(), type: 'privateLobbyCreated', lobbyId: 'L2', runId: 'some-other-object' });
+  const plain = a.summary(a.records()).privateLobbies;
+  assert.equal(plain.unknownAfterRestart, 2, 'without a live set the Node run id rule applies');
+  const live = a.summary(a.records(), { waiting: new Set(['L1']) }).privateLobbies;
+  assert.equal(live.currentlyWaiting, 1);
+  assert.equal(live.unknownAfterRestart, 1);
+});

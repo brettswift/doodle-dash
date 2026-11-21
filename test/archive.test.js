@@ -105,3 +105,35 @@ test('admin retrieval needs bearer token', async () => {
     assert.ok(!(await (await fetch(u('/stats'))).text()).includes('abcdef01'));
   } finally { s.close(); }
 });
+
+// Reference best/worst over the complete list of drawings (first maximum, last minimum excluding best).
+function reference(gains) {
+  let bi = 0; gains.forEach((g, i) => { if (g > gains[bi]) bi = i; });
+  let wi = -1; gains.forEach((g, i) => { if (i !== bi && (wi < 0 || g <= gains[wi])) wi = i; });
+  return { best: bi, worst: wi < 0 ? null : wi };
+}
+test('showcase keeps only best/worst candidates yet matches full-list tie semantics for every small gain sequence', () => {
+  let seed = 12345; const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let k = 0; k < 400; k++) {
+    const len = 1 + rnd(8), gains = Array.from({ length: len }, () => rnd(4) * 100);
+    const dir = tmp(); const { r } = room(dir);
+    r.rotations = 10; // enough turns; drive them manually
+    const turns = gains.map((g, i) => ({ gain: g, strokes: ink(i + 1) }));
+    // play() supports one rotation of 3 players; chain several single-rotation games by driving the core state directly
+    r.handle(r.players[0], { t: 'start' }, 0);
+    let now = 0;
+    for (const t of turns) {
+      if (r.phase === 'gameOver') break;
+      const d = r.drawer(); r.handle(d, { t: 'pick', i: 0 }, now);
+      for (const s of t.strokes) r.handle(d, { t: 'draw', s: true, c: s.c, w: s.w, p: s.p }, now);
+      d.gain = t.gain; r.endRound(now, 'time up'); now += 10000; r.tick(now); if (r.phase === 'roundEnd') r.nextRound(now);
+    }
+    const played = Math.min(len, 30);
+    const ref = reference(gains.slice(0, r.drawn));
+    const bw = r.bestWorst();
+    assert.ok(r.state.showcase.length <= 2, 'showcase holds at most two drawings, got ' + r.state.showcase.length);
+    assert.equal(bw.best.strokes[0].p[0], ref.best + 1, 'best is the first maximum ' + gains);
+    if (ref.worst === null) assert.equal(bw.worst, null); else assert.equal(bw.worst.strokes[0].p[0], ref.worst + 1, 'worst is the last minimum ' + gains);
+    assert.ok(played > 0);
+  }
+});

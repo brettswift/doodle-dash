@@ -41,3 +41,16 @@ Seed it from a pulled backup with `BASE_URL=... ADMIN_TOKEN=... node tools/impor
 
 ## Analytics retention
 Analytics rows older than 183 days are deleted in batches of 500 by `Store.pruneEvents`, called through `Analytics.cleanup`. Node runs it at startup and every 24 h. The Directory Durable Object runs it from a daily alarm (up to 20 batches per run, then re-armed after 60 s if more remain). History, tiers and the best/worst archive are never deleted. The dashboard still reads 90 days of product records and 7 days of service samples.
+
+## Production configuration (step 6b, not deployed)
+
+`cf/wrangler.production.toml` is the explicit production config: `APP_ENV=production`, Worker name `crayon-breath` (its own Durable Object namespaces, separate from the dev Worker), `workers_dev=false`, and no routes or DNS. The cutover step adds the crayonbreath.com route deliberately.
+Secrets are set by name with `wrangler secret put NAME -c wrangler.production.toml` and never appear in the file: `DOODLE_EXPORT_TOKEN`, `NTFY_BASE_URL`, `NTFY_TOPIC`, `NTFY_ALERTS_ENABLED` (must be `true` for alerts).
+Check offline with `npx wrangler deploy --dry-run -c wrangler.production.toml`. The dev-only `/admin/import` endpoint answers 404 under `APP_ENV=production`.
+
+## Write path guarantees (step 6b)
+
+- A Room persists each completed-results batch before sending it to the Directory and deletes the row after acknowledgement; a batch restored after eviction is retried the same way.
+- The Directory applies a batch in one SQL transaction (history rows, events, retire, ingest marker), rechecks the marker inside that transaction, and updates its in-memory history and room registry only after the commit. A failed history or archive write rejects the batch so the Room retries; a deliberate "archive full" refusal is still acknowledged and nothing is deleted.
+- An unallocated room code is refused before a socket is accepted and creates no storage. A Room snapshot keeps only the current best and worst showcase drawings (same first-best / last-worst tie rules), so it stays far below the 8 MB SQL value limit; if a snapshot write fails the old snapshot is dropped and the write retried on the next event.
+- Dashboard health reports the real notifier configuration and sums delivery counters from the live Rooms (counters reset when a Room object is evicted). Private-lobby "waiting" status comes from the live Rooms, not from the Directory's process id.

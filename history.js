@@ -50,6 +50,10 @@ class History {
     this.trim();
     return seq;
   }
+  // Strict two-step variant for hosts that must never acknowledge an unsaved drawing (Directory ingest): prepare() builds the row,
+  // the caller writes it (a failure throws and nothing here has changed), and commit() updates memory only after the write succeeded.
+  prepare(rec, seq) { const r = { seq, out: 'abandoned', ...rec }; return { r, row: this.rowOf(r) }; }
+  commit(r) { this.seq = Math.max(this.seq, r.seq); this.recs.set(r.seq, r); this.last.set(r.tid, r.seq); this.trim(); }
   end(seq, f) {
     const r = this.recs.get(seq); if (!r) return;
     Object.assign(r, f); this.write('history', (s) => s.putDrawing(seq, this.rowOf(r)));

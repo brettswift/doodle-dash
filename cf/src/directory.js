@@ -17,6 +17,7 @@ import { NAME_RE } from '../../game.js';
 import { authorized, adminPage } from '../../admin.js';
 import { buildArchive } from '../../export.js';
 import { TOPICS } from '../../words.js';
+import { makeNotifier } from '../../notifier.js';
 import { SEC } from '../../static-files.js';
 import { DirectoryStore } from './do-store.js';
 
@@ -86,14 +87,29 @@ export class Directory extends DurableObject {
     if (!batch || !Number.isFinite(batch.n) || typeof src !== 'string') throw new Error('bad batch');
     const last = this.store.lastIngest(src);
     if (last !== null && batch.n <= last) return { dup: true, view: this.view() };
-    for (const a of batch.archives || []) await this.archive.save(a.meta, a.sel); // idempotent by game id ('exists')
-    const applied = [];
-    this.store.tx(() => {
-      for (const rec of batch.drawings || []) { const { seq, ...r } = rec; applied.push({ tid: r.tid, seq: this.history.record(r) }); }
+    // Archive first (idempotent by game id: 'exists'). A failed save rejects the whole batch so the Room retries it; a deliberate
+    // 'full' refusal (cap reached, nothing deleted) is acknowledged as today.
+    for (const a of batch.archives || []) {
+      const res = await this.archive.save(a.meta, a.sel);
+      if (res === 'error' || res === 'disabled') throw new Error('archive save ' + res);
+    }
+    // One transaction: history rows, events, retire and the marker commit together or not at all. Memory (history cache, room
+    // registry) changes only after the commit. The marker is rechecked here because the archive awaits above let an overlapping
+    // delivery of the same batch run in between.
+    const staged = [];
+    const dup = this.store.tx(() => {
+      const cur = this.store.lastIngest(src);
+      if (cur !== null && batch.n <= cur) return true;
+      let seq = this.history.seq;
+      for (const rec of batch.drawings || []) { const { seq: _ignored, ...r } = rec; const p = this.history.prepare(r, ++seq); this.store.putDrawing(p.r.seq, p.row); staged.push(p.r); }
       for (const e of batch.events || []) if (e && typeof e.type === 'string' && Number.isFinite(e.at)) this.store.addEvent(e);
-      if (batch.retire && CODE_RE.test(src)) { this.codes.delete(src); this.store.delCode(src); }
+      if (batch.retire && CODE_RE.test(src)) this.store.delCode(src);
       this.store.setIngest(src, batch.n);
+      return false;
     });
+    if (dup) return { dup: true, view: this.view() };
+    if (batch.retire && CODE_RE.test(src)) this.codes.delete(src);
+    const applied = staged.map((r) => { this.history.commit(r); return { tid: r.tid }; });
     for (const a of applied) adapt.consider(this.history, this.topics, a.tid, Date.now());
     if (batch.sel) for (const [k, v] of Object.entries(batch.sel)) if (k in this.topics.stats && Number.isFinite(v)) this.topics.stats[k] += v;
     return { dup: false, view: this.view() };
@@ -186,10 +202,10 @@ export class Directory extends DurableObject {
     const denied = () => plain(this.exportToken ? 401 : 404, this.exportToken ? 'unauthorized' : 'not found');
     if (path === '/admin/analytics.json') {
       if (!auth()) return denied();
-      const rt = await this.runtime();
+      const { waitingLobbies, ...rt } = await this.runtime();
       this.analytics.sample(rt); // current sample so the dashboard is never empty (no periodic sampler: objects hibernate)
       const records = this.analytics.records();
-      return json(200, { summary: this.analytics.summary(records), operations: this.analytics.operations(records), health: this.analytics.health(rt) });
+      return json(200, { summary: this.analytics.summary(records, { waiting: new Set(waitingLobbies) }), operations: this.analytics.operations(records), health: this.analytics.health(rt) });
     }
     if (path === '/admin/drawings.json' || /^\/admin\/drawings\/[0-9a-f]{8}\.json$/.test(path)) {
       if (!auth()) return denied();
@@ -271,9 +287,16 @@ export class Directory extends DurableObject {
     const stats = await Promise.all(codes.map((c) => this.roomStub(c).stats().catch(() => null)));
     const live = stats.filter((s) => s && s.live);
     const sum = (k) => live.reduce((n, s) => n + (s[k] || 0), 0);
+    // Notifier: configuration is derived exactly as the Rooms derive it (same env), delivery counters are summed from the Rooms
+    // that are currently reachable (a Room's counters reset when its object is evicted; 'since boot' on Fly has the same caveat).
+    const configured = !this.qa && this.env.NTFY_ALERTS_ENABLED === 'true' && makeNotifier({ baseUrl: this.env.NTFY_BASE_URL, topic: this.env.NTFY_TOPIC || 'crayon_breath', enabled: true }).configured;
+    const ok = stats.filter((s) => s && s.ntfy);
+    const latest = (k) => ok.reduce((m, s) => (s.ntfy[k] && (m === null || s.ntfy[k] > m) ? s.ntfy[k] : m), null);
+    const ntfy = { sent: ok.reduce((n, s) => n + s.ntfy.sent, 0), failed: ok.reduce((n, s) => n + s.ntfy.failed, 0), lastSentAt: latest('lastSentAt'), lastFailedAt: latest('lastFailedAt'), payload: 'aggregate-only' };
     return {
       openSockets: this.ctx.getWebSockets().length + sum('sockets'), activeRooms: live.length, activePlayers: sum('connected'),
-      publicQueue: this.mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: false, ntfy: {}, qa: this.qa,
+      publicQueue: this.mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: configured, ntfy, qa: this.qa,
+      waitingLobbies: live.map((s) => s.lobbyId).filter(Boolean), // live-room projection for private-lobby status (stripped before it reaches health)
       registeredRooms: codes.length, unreachableRooms: stats.length - stats.filter(Boolean).length,
       storage: { rowsWritten: this.store.rowsWritten + sum('rowsWritten'), rowsRead: this.store.rowsRead + sum('rowsRead'), directoryRowsWritten: this.store.rowsWritten },
     };

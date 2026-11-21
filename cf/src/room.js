@@ -25,7 +25,7 @@ export class Room extends DurableObject {
     this.log = (...a) => console.error('[doodle-room]', ...a);
     this.store = new RoomStore(ctx.storage);
     this.qa = env.APP_ENV !== 'production';
-    if (!this.store.get('salt')) this.store.set('salt', randomBytes(16).toString('hex'));
+    // No write happens here: an object nobody initialised (e.g. a probed, unallocated room code) stays storage-free.
     this.salt = this.store.get('salt');
     this.interval = null; this.retryN = 0; this.flushing = null;
     this.build();
@@ -42,7 +42,7 @@ export class Room extends DurableObject {
     const analytics = new Analytics({ store: this.outbox.eventStore, enabled: true, qa: this.qa, log: this.log });
     // The Directory already recorded the visit ('landing'); the Room-side socket must not count it again.
     this.analytics = { event: (type, props) => { if (type !== 'landing') analytics.event(type, props); } };
-    this.notifier = makeNotifier({ baseUrl: this.env.NTFY_BASE_URL, topic: this.env.NTFY_TOPIC || 'crayon_breath', enabled: !this.qa && this.env.NTFY_ALERTS_ENABLED === 'true', log: this.log });
+    this.notifier = this.makeNotifier();
     this.history = new LocalHistory(this.outbox);
     this.topics = makeRoomTopics(this.history);
     this.archive = { save: (meta, sel) => { if (sel && sel.best) this.outbox.addArchive(meta, sel); return Promise.resolve('queued'); } };
@@ -58,6 +58,7 @@ export class Room extends DurableObject {
     this.selSent = { offers: 0, unused: 0, aged: 0, exhausted: 0, reservationFallback: 0 };
     this.pending = null;
   }
+  makeNotifier() { return makeNotifier({ baseUrl: this.env.NTFY_BASE_URL, topic: this.env.NTFY_TOPIC || 'crayon_breath', enabled: !this.qa && this.env.NTFY_ALERTS_ENABLED === 'true', log: this.log }); }
   room() { return this.code ? this.game.get(this.code) : undefined; }
 
   restore() {
@@ -91,6 +92,7 @@ export class Room extends DurableObject {
     if (!/^[A-Z]{4}$/.test(String(code))) throw new Error('bad code');
     if (this.live) throw new Error('room exists');
     const now = Date.now();
+    if (!this.salt) { this.salt = randomBytes(16).toString('hex'); this.store.set('salt', this.salt); }
     this.code = code; this.store.set('code', code);
     this.history.load(view);
     const r = this.game.open(code, now); this.live = true;
@@ -105,7 +107,8 @@ export class Room extends DurableObject {
   }
   stats() {
     const r = this.room();
-    return { live: !!r, sockets: this.ctx.getWebSockets().length, connected: r ? r.connected.length : 0, phase: r ? r.phase : null, public: r ? !!r.public : false,
+    const lobbyId = r && !r.public && r.phase === 'lobby' && !r.state.analyticsStarted ? r.gid : null;
+    return { live: !!r, lobbyId, ntfy: { ...this.notifier.status }, sockets: this.ctx.getWebSockets().length, connected: r ? r.connected.length : 0, phase: r ? r.phase : null, public: r ? !!r.public : false,
       rowsWritten: this.store.rowsWritten, rowsRead: this.store.rowsRead };
   }
 
@@ -121,6 +124,8 @@ export class Room extends DurableObject {
 
   async fetch(request) {
     if (request.headers.get('upgrade') !== 'websocket') return plain(404, 'not found');
+    // Only a room the Directory allocated and initialised has a live game; anything else is refused before a socket is accepted.
+    if (!this.live) return plain(404, 'not found');
     const sockets = this.ctx.getWebSockets();
     if (sockets.length >= (num(this.env.MAX_ROOM_SOCKETS) || MAX_SOCKETS)) return new Response(null, { status: 503, headers: { 'retry-after': '30' } });
     // x-hub-* headers are set by the public Worker only (it strips any client-supplied copy). Never persist the raw IP.
@@ -167,8 +172,12 @@ export class Room extends DurableObject {
     if (!this.outbox.pendingItems()) return null;
     const sel = {};
     for (const k of Object.keys(this.selSent)) { const d = this.topics.stats[k] - this.selSent[k]; if (d) { sel[k] = d; this.selSent[k] = this.topics.stats[k]; } }
-    return this.outbox.seal({ src: this.code, sel });
+    const b = this.outbox.seal({ src: this.code, sel });
+    // Durable before the first delivery attempt, so an eviction during an outstanding RPC cannot lose completed results.
+    try { this.store.set(this.obKey(b), JSON.stringify(b)); } catch (e) { this.log('outbox persist failed', e.message); }
+    return b;
   }
+  obKey(b) { return 'ob:' + String(b.n).padStart(20, '0'); }
   // Deliver queued batches in order. A failed batch stays queued (and persisted, so eviction cannot lose it); an alarm retries it.
   flush() {
     if (this.flushing) { this.again = true; return this.flushing; }
@@ -182,11 +191,10 @@ export class Room extends DurableObject {
             try { res = await this.dirStub().ingest(b.src || 'orphan', b); }
             catch (e) {
               this.log('directory write failed, will retry:', e.message);
-              for (const q of this.outbox.queue) if (!q.saved) { try { this.store.set('ob:' + String(q.n).padStart(20, '0'), JSON.stringify(q)); q.saved = true; } catch (e2) { this.log('outbox persist failed', e2.message); } }
               this.retryN++; await this.schedule(); return;
             }
             this.outbox.queue.shift(); this.retryN = 0;
-            if (b.saved) this.store.del('ob:' + String(b.n).padStart(20, '0'));
+            this.store.del(this.obKey(b));
             if (res && res.view) this.applyView(res.view);
           }
         } while (this.again);
@@ -222,7 +230,13 @@ export class Room extends DurableObject {
       const fp = `${r.phase}|${r.drawn}|${r.rotation}|${r.players.length}|${r.connected.length}|${r.hostId}|${r.chat.length}|${r.rotations}|${r.public}`;
       if (this.fingerprint !== fp) {
         this.fingerprint = fp;
-        try { this.store.set('snap', JSON.stringify(r.snapshot())); } catch (e) { this.log('room snapshot failed', e.message); }
+        try { this.store.set('snap', JSON.stringify(r.snapshot())); }
+        catch (e) {
+          // Never leave an older snapshot that looks current: drop it and retry on the next event (the game keeps running in memory).
+          this.log('room snapshot failed, dropping stale snapshot', e.message);
+          try { this.store.del('snap'); } catch { /* storage unavailable */ }
+          this.fingerprint = null;
+        }
       }
     } else if (this.live) {
       this.retire();
