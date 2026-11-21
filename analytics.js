@@ -1,65 +1,36 @@
 'use strict';
-// Optional first-party analytics. JSONL is append-only, bounded, and never blocks gameplay.
-const fs = require('node:fs');
-const path = require('node:path');
+// Optional first-party analytics. Events are appended to the SQLite analytics_events table; read views are windowed; rows older than 183 days are removed by cleanup().
 const crypto = require('node:crypto');
+const { openStore } = require('./store');
 
+// Process metrics are optional: Cloudflare Workers has no cpuUsage/memoryUsage, so those fields are null there (unavailable, not zero).
+const hr = () => { try { return process.hrtime.bigint(); } catch { return BigInt(Date.now()) * 1000000n; } };
+const cpuUse = () => { try { return process.cpuUsage(); } catch { return null; } };
+const memUse = () => { try { return process.memoryUsage(); } catch { return {}; } };
 const MAX_BYTES = 8 * 1024 * 1024;
 const DAY = 86400000;
+const RETENTION_DAYS = 183; // owner decision: analytics kept 6 months
 const allowed = new Set(['landing', 'nameEntered', 'intent', 'queueEntered', 'queueLeft', 'queueTimeout', 'lobbyFormed', 'gameStarted', 'gameEnded', 'gameAbandoned', 'privateLobbyCreated', 'privateLobbyClosed', 'connect', 'reconnect', 'error', 'operation']);
 const clean = (v, n = 80) => String(v || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, n);
 
 class Analytics {
-  constructor({ dir, log = () => {}, enabled = true, qa = false } = {}) {
-    this.dir = dir; this.log = log; this.enabled = !!(dir && enabled); this.file = dir && path.join(dir, 'analytics.jsonl');
-    this.qa = !!qa; this.pending = 0; this.dropped = 0; this.writing = false; this.queue = []; this.started = Date.now();
-    this.counts = Object.create(null); this.lastLag = 0; this.lastTick = process.hrtime.bigint();
-    this.runId = crypto.randomBytes(8).toString('hex'); this.cpu = process.cpuUsage(); this.cpuAt = process.hrtime.bigint();
-    this.cpuPercent = null; this.lastMaintenance = 0;
-    if (this.enabled) { try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { this.enabled = false; this.log('analytics disabled', e.message); } }
-    if (this.enabled) this.maintain();
+  constructor({ dir, store = null, log = () => {}, enabled = true, qa = false } = {}) {
+    this.dir = dir; this.log = log; this.qa = !!qa; this.pending = 0; this.dropped = 0; this.writing = false; this.queue = []; this.started = Date.now();
+    this.store = enabled ? (store || (dir ? openStore(dir, { log }) : null)) : null; this.enabled = !!this.store;
+    this.counts = Object.create(null); this.lastLag = 0; this.lastTick = hr();
+    this.runId = crypto.randomBytes(8).toString('hex'); this.cpu = cpuUse(); this.cpuAt = hr();
+    this.cpuPercent = null;
   }
-  tick() { const now = process.hrtime.bigint(); const elapsed = Number(now - this.lastTick) / 1e6; this.lastLag = Math.max(0, elapsed - 250); this.lastTick = now; }
+  tick() { const now = hr(); const elapsed = Number(now - this.lastTick) / 1e6; this.lastLag = Math.max(0, elapsed - 250); this.lastTick = now; }
   event(type, props = {}) {
     if (!this.enabled || !allowed.has(type)) return;
-    if (this.queue.length >= 200) { this.dropped++; return; }
     const e = { ...props, v: 1, at: Date.now(), type, qa: this.qa || undefined, runId: this.runId };
-    this.queue.push(JSON.stringify(e) + '\n'); this.counts[type] = (this.counts[type] || 0) + 1;
-    if (!this.writing) this.flush();
-  }
-  flush() {
-    if (!this.queue.length || !this.enabled) return;
-    this.writing = true; const text = this.queue.splice(0).join(''); this.pending += Buffer.byteLength(text);
-    fs.appendFile(this.file, text, (err) => {
-      this.pending -= Buffer.byteLength(text); this.writing = false;
-      if (err) { this.dropped++; this.log('analytics write failed', err.message); }
-      else this.rotate();
-      if (Date.now() - this.lastMaintenance > 3600000) this.maintain();
-      if (this.queue.length) this.flush();
-    });
-  }
-  rotate() {
-    try {
-      if (fs.statSync(this.file).size <= MAX_BYTES) return;
-      const old = `${this.file}.1`; try { fs.unlinkSync(old); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      fs.renameSync(this.file, old);
-    } catch (e) { this.log('analytics rotate failed', e.message); }
-  }
-  maintain() {
-    if (!this.enabled || this.writing) return;
-    this.lastMaintenance = Date.now();
-    try {
-      for (const file of [`${this.file}.1`, this.file]) {
-        let raw; try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-        const lines = raw.split('\n').filter(Boolean);
-        const kept = lines.filter((line) => { try { const e = JSON.parse(line); return Number.isFinite(e.at) && e.at > Date.now() - (e.type === 'operation' ? 7 : 90) * DAY; } catch { return false; } });
-        if (kept.length !== lines.length) { fs.writeFileSync(`${file}.tmp`, kept.length ? kept.join('\n') + '\n' : ''); fs.renameSync(`${file}.tmp`, file); }
-      }
-    } catch (e) { this.log('analytics retention failed', e.message); }
+    try { this.store.addEvent(e); this.counts[type] = (this.counts[type] || 0) + 1; }
+    catch (err) { this.dropped++; this.log('analytics write failed', err.message); }
   }
   sample(extra = {}) {
-    const now = process.hrtime.bigint(), cpu = process.cpuUsage();
-    this.cpuPercent = Math.round((cpu.user - this.cpu.user + cpu.system - this.cpu.system) / (Number(now - this.cpuAt) / 1000) * 1000) / 10;
+    const now = hr(), cpu = cpuUse();
+    if (cpu && this.cpu) this.cpuPercent = Math.round((cpu.user - this.cpu.user + cpu.system - this.cpu.system) / (Number(now - this.cpuAt) / 1000) * 1000) / 10;
     this.cpu = cpu; this.cpuAt = now;
     this.event('operation', this.health(extra));
   }
@@ -69,21 +40,26 @@ class Analytics {
       limitation: 'Process samples only while Fly machine runs. Missing intervals, host metrics, and pre-release history are unavailable, not zero.' };
   }
   health(extra = {}) {
-    const mem = process.memoryUsage(); let size = 0;
-    try { size = fs.statSync(this.file).size; } catch {}
+    const mem = memUse(); let size = 0;
+    try { if (this.store) size = this.store.eventBytes(); } catch {}
     return { ...extra, analyticsEnabled: this.enabled, qa: this.qa, cpuPercent: this.cpuPercent, hostCpuPercent: null, hostMemoryBytes: null,
-      uptimeMs: Date.now() - this.started, rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal,
+      uptimeMs: Date.now() - this.started, rss: mem.rss || null, heapUsed: mem.heapUsed || null, heapTotal: mem.heapTotal || null,
       eventLoopLagMs: Math.round(this.lastLag), openSockets: extra.openSockets || 0, activeRooms: extra.activeRooms || 0,
       activePlayers: extra.activePlayers || 0, publicQueue: extra.publicQueue || 0, pendingWrites: this.pending,
       droppedEvents: this.dropped, eventStoreBytes: size, errorsSinceStart: this.counts.error || 0, counts: { ...this.counts } };
   }
+  // Daily retention job (Node interval / Durable Object alarm): delete at most `limit` analytics rows older than 183 days. Returns count deleted.
+  cleanup(now = Date.now(), limit = 500) {
+    if (!this.store) return 0;
+    try { return this.store.pruneEvents(now - RETENTION_DAYS * DAY, limit); } catch (err) { this.log('analytics cleanup failed', err.message); return 0; }
+  }
   records() {
     if (!this.enabled) return [];
-    let raw = '';
-    for (const file of [`${this.file}.1`, this.file]) { try { raw += fs.readFileSync(file, 'utf8') + '\n'; } catch (e) { if (e.code !== 'ENOENT') throw e; } }
-    return raw.split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).sort((a, b) => a.at - b.at);
+    const now = Date.now(); // read view only: older rows stay in the database
+    return this.store.events(now - 90 * DAY, now - 7 * DAY);
   }
-  summary(records = this.records()) {
+  // `waiting`: optional Set of private lobby ids known to be waiting right now (hosts whose rooms live outside this object, e.g. Cloudflare Rooms).
+  summary(records = this.records(), { waiting = null } = {}) {
     const now = Date.now(), recs = records.filter((x) => x.at > now - 90 * DAY && !x.qa && x.type !== 'operation');
     const games = new Map(), names = new Map(), modes = { public: { started: 0, ended: 0, configured: [], completed: [] }, private: { started: 0, ended: 0, configured: [], completed: [] } };
     for (const e of recs) {
@@ -102,7 +78,7 @@ class Analytics {
     const avg = (a) => a.length ? Math.round(a.reduce((s, n) => s + n, 0) / a.length * 10) / 10 : null;
     const lobbies = new Map();
     for (const e of recs) {
-      if (e.type === 'privateLobbyCreated') lobbies.set(e.lobbyId, { status: e.runId === this.runId ? 'waiting' : 'unknown' });
+      if (e.type === 'privateLobbyCreated') lobbies.set(e.lobbyId, { status: (waiting ? waiting.has(e.lobbyId) : e.runId === this.runId) ? 'waiting' : 'unknown' });
       if (e.type === 'gameStarted' && e.mode === 'private') { const x = lobbies.get(e.lobbyId || e.gameId); if (x) x.status = 'started'; }
       if (e.type === 'privateLobbyClosed') { const x = lobbies.get(e.lobbyId); if (x && x.status !== 'started') x.status = 'closed'; }
     }
@@ -151,4 +127,4 @@ function audienceSummary(recs, now) {
 }
 function dist(a) { const out = {}; for (const n of a) out[n] = (out[n] || 0) + 1; return out; }
 function anonId(value) { return /^[a-f0-9]{32}$/i.test(value || '') ? value.toLowerCase() : crypto.randomBytes(16).toString('hex'); }
-module.exports = { Analytics, anonId, clean };
+module.exports = { Analytics, anonId, clean, RETENTION_DAYS };

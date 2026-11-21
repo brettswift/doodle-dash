@@ -1,0 +1,14 @@
+'use strict';
+// Portable SQLite schema shared by the Node store (node:sqlite) and the Durable Object store (ctx.storage.sql).
+const SCHEMA_VERSION = 1;
+const DDL = `
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS drawings (seq INTEGER PRIMARY KEY, tid TEXT, g TEXT, rec TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS drawings_tid ON drawings (tid, seq);
+CREATE TABLE IF NOT EXISTS tiers (id TEXT PRIMARY KEY, tier TEXT NOT NULL, since_seq INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS tier_audit (n INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS analytics_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, type TEXT NOT NULL, qa INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS analytics_events_at ON analytics_events (at);
+CREATE TABLE IF NOT EXISTS archive (game_id TEXT PRIMARY KEY, saved_at TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, data BLOB NOT NULL) WITHOUT ROWID;
+`;
+module.exports = { SCHEMA_VERSION, DDL };

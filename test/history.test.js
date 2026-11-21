@@ -7,6 +7,7 @@ const path = require('node:path');
 const { start } = require('../server');
 const { Game } = require('../game');
 const { History } = require('../history');
+const { openStore } = require('../store');
 const { Topics } = require('../topics');
 const adapt = require('../adapt');
 const { TOPICS, TIERS, BY_ID, DIFFS } = require('../words');
@@ -35,32 +36,26 @@ test('catalog: >=1000 distinct familiar topics, balanced tiers, stable slug ids,
 });
 
 // ---------- durable store ----------
-test('history: reload, partial last line, corrupt state fallback, bounded compaction', () => {
+test('history: reload, tiers and audit persist, active view bounded while every row stays in SQLite', () => {
   const dir = tmp();
   let h = new History({ dir });
   const a = h.start({ tid: 'apple', d: 'easy', m: 10, g: 'g1', t0: 1, el0: 3, budget: 80000 });
   h.end(a, { out: 'all', t1: 9, dur: 8, ok: 2, gt: [1000, 2000], el1: 3, ink: true, dd: false });
   const b = h.start({ tid: 'cat', d: 'easy', m: 10, g: 'g1', t0: 20, el0: 3, budget: 80000 }); // never ended: restart mid-drawing
   h.setTier('cat', 'medium', { at: 1, id: 'cat', from: 'easy', to: 'medium', rules: 1 });
-  fs.appendFileSync(path.join(dir, 'history.jsonl'), '{"k":"s","seq":99,"tid":"torn'); // torn write
+  h.close();
   h = new History({ dir });
   assert.equal(h.recs.get(a).ok, 2); assert.equal(h.recs.get(a).out, 'all');
   assert.equal(h.recs.get(b).out, 'abandoned'); assert.equal(h.seq, b);
   assert.equal(h.last.get('apple'), a); assert.equal(h.state.tiers.cat, 'medium'); assert.equal(h.state.audit.length, 1);
-  assert.equal(fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8').split('\n').filter(Boolean).length, 2, 'torn line dropped');
-  // corrupt state.json -> .bak
-  h.setTier('dog', 'medium', { at: 2, id: 'dog', from: 'easy', to: 'medium', rules: 1 });
-  fs.writeFileSync(path.join(dir, 'state.json'), '{not json');
-  h = new History({ dir });
-  assert.equal(h.state.tiers.cat, 'medium');
-  // bounded
+  h.close();
   const small = new History({ dir: tmp(), maxRecords: 40 });
   for (let i = 0; i < 400; i++) small.end(small.start({ tid: 't' + (i % 7), d: 'easy', g: 'x', t0: i, el0: 1, budget: 1 }), { out: 'all' });
   assert.ok(small.recs.size <= 50, 'recs ' + small.recs.size);
-  const lines = fs.readFileSync(path.join(small.dir, 'history.jsonl'), 'utf8').split('\n').filter(Boolean).length;
-  assert.ok(lines <= 100, 'lines ' + lines);
-  assert.equal(new History({ dir: small.dir, maxRecords: 40 }).seq, 400);
-  assert.ok(!fs.readdirSync(small.dir).some((f) => f.endsWith('.tmp')));
+  assert.equal(small.store.drawingCount(), 400, 'nothing deleted from storage');
+  const dir2 = small.dir; small.close();
+  const again = new History({ dir: dir2, maxRecords: 40 });
+  assert.equal(again.seq, 400); assert.equal(again.recs.size, 40); again.close();
 });
 
 // ---------- selection / reservation ----------
@@ -251,12 +246,34 @@ test('e2e: real drawing persists across restart, /stats is aggregate-only, no ad
   assert.ok(!JSON.stringify(stats).match(/token|Ann|Bob|127\.0/));
   for (const p of ['/admin', '/reset', '/history', '/api/reset']) for (const m of ['GET', 'POST', 'DELETE']) assert.equal((await fetch(base + p, { method: m })).status, 404);
   a.ws.close(); b.ws.close(); srv.close();
-  const raw = fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8');
+  const dump = openStore(dir);
+  const raw = dump.q('SELECT seq, tid, g, rec FROM drawings').all().map((r) => JSON.stringify(r)).join('\n') + '\n' + dump.q('SELECT json FROM tier_audit').all().map((r) => r.json).join('\n');
+  dump.close();
   for (const bad of ['Ann', 'Bob', 'token', '127.0.0.1', '#000000']) assert.ok(!raw.includes(bad), 'leak ' + bad);
-  const rec = Object.assign({}, ...raw.trim().split('\n').map((l) => JSON.parse(l)));
+  const rec = Object.assign({ seq: 1 }, JSON.parse(JSON.parse(raw.split('\n')[0]).rec), { tid: JSON.parse(raw.split('\n')[0]).tid });
   assert.equal(rec.ok, 1); assert.equal(rec.d, 'medium'); assert.equal(rec.out, 'all');
   srv = await start(0, { dataDir: dir }); // restart
   assert.equal(srv.game.ctx.history.recs.size, 1); assert.equal(srv.game.ctx.history.recs.get(rec.seq).tid, rec.tid);
   for (let i = 0; i < 300; i++) for (const c of srv.game.ctx.topics.offer('Z')) assert.notEqual(c.id, rec.tid);
   srv.close();
+});
+
+test('History.record stores a finished drawing in one write with the next sequence number', () => {
+  const rows = [];
+  const store = { loadDrawings: () => [], maxSeq: () => 0, loadTiers: () => ({ tiers: {}, since: {} }), loadAudit: () => [], putDrawing: (seq, rec) => rows.push([seq, rec]) };
+  const h = new History({ store });
+  const a = h.record({ tid: 'cat', d: 'easy', g: 'g1', out: 'timeup', ok: 1 });
+  const b = h.record({ tid: 'dog', d: 'easy', g: 'g1', out: 'all', ok: 2 });
+  assert.deepEqual([a, b], [1, 2]);
+  assert.equal(rows.length, 2); // one write each, not start + end
+  assert.equal(rows[0][1].out, 'timeup');
+  assert.equal(h.last.get('dog'), 2);
+});
+
+test('Game.open creates a room under an external code without the room cap (Cloudflare Room objects)', () => {
+  const g = new Game();
+  for (let i = 0; i < 100; i++) g.create(Date.now());
+  assert.equal(g.create(Date.now()), null); // Node host: 100-room cap unchanged
+  const r = g.open('ABCD', Date.now());
+  assert.equal(r.code, 'ABCD'); assert.equal(g.get('abcd'), r);
 });

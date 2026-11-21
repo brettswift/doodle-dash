@@ -37,20 +37,21 @@ test('browser cohorts dedupe sessions and game participants, count exact complet
   assert.equal(s.privateLobbies.createToStartRate, null);
 });
 
-test('retention purges old product/operational records without touching gameplay; rotated records export', () => {
+test('read views hide old product/operational records but storage and export keep every row', () => {
   const dir = tmp(), now = Date.now(), day = 86400000;
   const keep = { type: 'landing', at: now - 8 * day, browserId: 'a'.repeat(32) };
-  write(dir, 'analytics.jsonl.1', [keep, { type: 'operation', at: now - 8 * day }, { type: 'landing', at: now - 91 * day }]);
+  const old = { type: 'landing', at: now - 91 * day };
+  write(dir, 'analytics.jsonl.1', [keep, { type: 'operation', at: now - 8 * day }, old]);
   write(dir, 'analytics.jsonl', [{ type: 'operation', at: now - day, rss: 1 }]);
   fs.writeFileSync(path.join(dir, 'history.jsonl'), '{"preserve":true}\n');
   const analytics = new Analytics({ dir });
   assert.equal(analytics.records().length, 2);
   assert.equal(analytics.summary().events, 1);
   assert.equal(analytics.operations().samples.length, 1);
-  assert.equal(fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8'), '{"preserve":true}\n');
-  const archive = zlib.gunzipSync(buildArchive(dir)).toString();
+  assert.equal(fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8'), '{"preserve":true}\n', 'legacy source untouched');
+  const archive = zlib.gunzipSync(buildArchive(analytics.store)).toString();
   assert.ok(archive.includes(JSON.stringify(keep)));
-  assert.ok(!archive.includes(String(now - 91 * day)));
+  assert.ok(archive.includes(JSON.stringify(old)), 'nothing is dropped from the backup');
 });
 
 test('old unresolved lobby is unknown after restart, not currently waiting', () => {

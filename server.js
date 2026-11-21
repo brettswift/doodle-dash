@@ -3,39 +3,17 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { accept } = require('./ws');
-const { Game, NAME_RE } = require('./game');
+const { Game } = require('./game');
 const { TOPICS } = require('./words');
-const { Matchmaker } = require('./lobby');
-const { Analytics, anonId, clean } = require('./analytics');
+const { createSession, createMatchmaker } = require('./session');
+const { Analytics, clean } = require('./analytics');
+const { openStore } = require('./store');
 const { authorized, adminPage } = require('./admin');
 const { makeNotifier } = require('./notifier');
-const PUBLIC_ROUNDS = 3; // quick game: 3 rounds, each round every player draws once
 
-const FILES = {
-  '/': ['index.html', 'text/html; charset=utf-8'],
-  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
-  '/geom.js': ['geom.js', 'text/javascript; charset=utf-8'],
-  '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
-  '/admin/dashboard.js': ['admin.js', 'text/javascript; charset=utf-8'],
-  '/privacy': ['privacy.html', 'text/html; charset=utf-8'],
-  '/style.css': ['style.css', 'text/css; charset=utf-8'],
-  '/social-preview.png': ['social-preview.png', 'image/png'],
-  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
-  '/fonts/Schoolbell-400.woff2': ['fonts/Schoolbell-400.woff2', 'font/woff2'],
-  '/fonts/PatrickHand-400.woff2': ['fonts/PatrickHand-400.woff2', 'font/woff2'],
-};
+const { FILES, SEC } = require('./static-files');
 const net = require('node:net');
-// Public-routable only: anything private/loopback/link-local/CGNAT/ULA is never a usable client identity.
-function isPublicIp(ip) {
-  const v = net.isIP(ip);
-  if (v === 4) {
-    const [a, b] = ip.split('.').map(Number);
-    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
-  }
-  if (v === 6) { const l = ip.toLowerCase(); return !(l === '::' || l === '::1' || /^f[cd]/.test(l) || /^fe[89ab]/.test(l) || l.startsWith('::ffff:')); }
-  return false;
-}
+const { isPublicIp } = require('./ip');
 const isPrivatePeer = (ip) => net.isIP(ip) !== 0 && !isPublicIp(ip);
 // Real client address, or null (fail closed). Forwarding headers are honoured only when the TCP peer is a
 // private/loopback address (Fly proxy, in-cluster ingress); a public peer is always its own identity.
@@ -62,57 +40,27 @@ function coarseLocation(req, trustProxy = true) {
   return { country: /^[A-Z]{2}$/.test(country) ? country : undefined, region: /^[A-Z0-9-]{1,12}$/.test(region) ? region : undefined };
 }
 const MAX_MSG = 4096, MAX_PER_IP = 40, MAX_SOCKETS = 600;
-const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; connect-src 'self' wss: ws:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'" };
 
 const { makeExportHandler } = require('./export');
-
-function bucket(cap, perSec) {
-  let tokens = cap, last = Date.now();
-  return () => { const n = Date.now(); tokens = Math.min(cap, tokens + (n - last) * perSec / 1000); last = n; if (tokens < 1) return false; tokens--; return true; };
-}
 
 function start(port, opts = {}) {
   const trustProxy = opts.trustProxy !== false;
   const qa = opts.qa ?? (process.env.NODE_ENV === 'test' || process.env.APP_ENV === 'qa' || (!process.env.FLY_APP_NAME && process.env.APP_ENV !== 'production'));
   const pub = {};
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
-  const analytics = new Analytics({ dir: opts.dataDir ?? process.env.DATA_DIR, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
+  const dataDir = opts.dataDir ?? process.env.DATA_DIR, store = openStore(dataDir, { log: (...a) => console.error('[doodle]', ...a) });
+  const analytics = new Analytics({ store, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
   const notifier = makeNotifier({ baseUrl: opts.ntfyBaseUrl ?? process.env.NTFY_BASE_URL, topic: opts.ntfyTopic ?? process.env.NTFY_TOPIC ?? 'crayon_breath', fetchImpl: opts.fetchImpl, enabled: !qa && (opts.alertsEnabled ?? process.env.NTFY_ALERTS_ENABLED === 'true'), log: (...a) => console.error('[doodle]', ...a) });
-  const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
+  const game = new Game({ store, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
   const maxPerIp = opts.maxPerIp ?? MAX_PER_IP;
   const maxSockets = opts.maxSockets ?? (+process.env.MAX_SOCKETS || MAX_SOCKETS);
-  // Public lobby: members are connection handles {name, send, enterRoom}. A started lobby becomes a normal
-  // room with rounds = 3 and is started at once by the server; nobody else can join it by code.
-  const mm = new Matchmaker({
-    firstMs: opts.lobbyFirstMs ?? (+process.env.LOBBY_FIRST_MS || undefined),
-    resetMs: opts.lobbyResetMs ?? (+process.env.LOBBY_RESET_MS || undefined),
-    onUpdate: (l) => {
-      const s = JSON.stringify({ t: 'public', n: l.members.length, max: mm.size, remaining: mm.remainingMs(l) });
-      for (const m of l.members) m.send(s);
-    },
-    onStart: (members) => {
-      const now = Date.now(), r = game.create(now);
-      if (!r) { for (const m of members) m.failPublic('Server busy, try later'); return; }
-      r.public = true; r.rotations = PUBLIC_ROUNDS;
-      const taken = new Set();
-      const seats = members.map((m) => {
-        let name = m.name, k = 1;
-        while (taken.has(name.toLowerCase())) { k++; name = m.name.slice(0, 11).trim() + ' ' + k; }
-        taken.add(name.toLowerCase());
-        return [m, r.join(name, now).p];
-      });
-      for (const [m, p] of seats) m.enterRoom(r, p, now);
-      r.handle(r.players.find((p) => p.id === r.hostId), { t: 'start' }, now);
-      analytics.event('lobbyFormed', { mode: 'public', players: seats.length });
-      opts.onPublicStart?.(r);
-    },
-  });
+  const mm = createMatchmaker({ game, analytics, firstMs: opts.lobbyFirstMs ?? (+process.env.LOBBY_FIRST_MS || undefined),
+    resetMs: opts.lobbyResetMs ?? (+process.env.LOBBY_RESET_MS || undefined), onPublicStart: opts.onPublicStart });
   const socks = new Set();
 
   const exportToken = Object.hasOwn(opts, 'exportToken') ? opts.exportToken : process.env.DOODLE_EXPORT_TOKEN;
-  const exportHandler = makeExportHandler({ dir: opts.dataDir ?? process.env.DATA_DIR, token: exportToken });
+  const exportHandler = makeExportHandler({ store, token: exportToken });
   const server = http.createServer((req, res) => {
     if (exportHandler(req, res)) return;
     const url = (req.url || '').split('?')[0];
@@ -157,102 +105,20 @@ function start(port, opts = {}) {
     perIp.set(ip, (perIp.get(ip) || 0) + 1);
     socks.add(socket); socket.on('close', () => socks.delete(socket));
     const observed = clientIp(req, trustProxy);
-    let room = null, player = null, waiting = null;
-    // Default identity covers clients (native ws) that never send an analytics message; web client upgrades it once.
-    let identity = { sessionId: anonId(), ...coarseLocation(req, trustProxy) }, identified = false;
-    const general = bucket(80, 60), guessB = bucket(4, 1), joinB = bucket(5, 0.2);
-    let warned = 0;
+    let session = null;
     const conn = accept(req, socket, {
       maxPayload: MAX_MSG,
       onClose: () => {
         const left = (perIp.get(ip) || 1) - 1;
         if (left > 0) perIp.set(ip, left); else perIp.delete(ip);
-        if (waiting) { analytics.event('queueLeft', identity); mm.leave(waiting); waiting = null; }
-        if (room && player && player.send === send) room.detach(player, Date.now());
+        session?.close();
       },
-      onMessage: (raw) => {
-        let m;
-        try { m = JSON.parse(raw); } catch { return; }
-        if (!m || typeof m !== 'object' || typeof m.t !== 'string') return;
-        const throttle = () => { if (Date.now() - warned > 1000) { warned = Date.now(); send(JSON.stringify({ t: 'error', msg: 'Slow down' })); } };
-        if (!general() || (m.t === 'guess' && !guessB())) return throttle();
-        const now = Date.now();
-        if (!player) {
-          if (m.t === 'analytics') {
-            if (identified) return; identified = true;
-            identity = { browserId: anonId(m.browserId), sessionId: anonId(m.sessionId), timezone: clean(m.timezone, 64), language: clean(m.language, 32), ...coarseLocation(req, trustProxy) };
-            analytics.event('landing', identity); return;
-          }
-          if (m.t === 'leavePublic') { if (waiting) { analytics.event('queueLeft', identity); mm.leave(waiting); waiting = null; send(JSON.stringify({ t: 'publicLeft' })); } return; }
-          if (!['create', 'join', 'resume', 'public'].includes(m.t) || waiting) return;
-          if (!joinB()) return throttle();
-          if (m.t === 'public') return queue(m);
-          return enter(m, now);
-        }
-        room.handle(player, m, now);
-      },
+      onMessage: (raw) => session.message(raw),
     });
     if (!conn) { perIp.set(ip, Math.max(0, (perIp.get(ip) || 1) - 1)); return; }
-    const send = (s) => conn.send(s);
-    const fail = (msg) => { analytics.event('error', { category: 'rejected-action' }); send(JSON.stringify({ t: 'error', msg })); };
+    session = createSession({ game, mm, analytics }, { send: (s) => conn.send(s), observed, location: coarseLocation(req, trustProxy) });
     const pinger = setInterval(() => { if (conn.idleMs() > 70000) conn.close(1001); else conn.ping(); }, 25000);
     socket.on('close', () => clearInterval(pinger));
-
-    // Validation and placement happen in one synchronous step (no await between count check and add).
-    function queue(m) {
-      const name = String(m.name ?? '').trim();
-      if (!NAME_RE.test(name)) return fail('Name: 1-14 letters, numbers, spaces');
-      waiting = {
-        name, send,
-        failPublic: (msg) => { waiting = null; fail(msg); },
-        enterRoom: (r, p, now) => {
-          waiting = null; room = r; player = p; p.ip = observed;
-          p.analytics = identity; analytics.event('nameEntered', { ...identity, name: p.name, mode: 'public' });
-          send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token, public: true }));
-          r.attach(p, send, now);
-        },
-      };
-      mm.join(waiting);
-      analytics.event('queueEntered', { ...identity, name, mode: 'public' });
-    }
-
-    function enter(m, now) {
-      let r, p, rejoin = false;
-      if (m.t === 'create') {
-        r = game.create(now);
-        if (!r) return fail('Server busy, try later');
-        const j = r.join(String(m.name ?? ''), now);
-        if (j.err) { game.rooms.delete(r.code); return fail(j.err); }
-        p = j.p;
-        analytics.event('privateLobbyCreated', { lobbyId: r.gid });
-      } else {
-        r = game.get(m.code);
-        if (!r) return fail('No such room');
-        if (m.t === 'join') {
-          const name = String(m.name ?? '');
-          const back = r.rejoinByIp(name, observed);
-          if (back) { p = back; rejoin = true; }
-          else if (r.public) return fail('That is a public game; use Public lobby');
-          else {
-            const j = r.join(name, now);
-            if (j.err) return fail(j.err);
-            p = j.p;
-          }
-        } else {
-          p = r.resume(String(m.token ?? ''));
-          if (!p) return fail('Session expired');
-          if (p.send) p.send(JSON.stringify({ t: 'error', msg: 'Signed in elsewhere' }));
-        }
-      }
-      room = r; player = p;
-      p.analytics = identity;
-      analytics.event('nameEntered', { ...identity, name: p.name, mode: r.public ? 'public' : 'private' });
-      analytics.event('intent', { ...identity, mode: m.t === 'create' ? 'private-create' : m.t === 'join' ? 'private-join' : 'resume' });
-      send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token }));
-      p.ip = observed;
-      r.attach(p, send, now);
-      if (m.t === 'join' && !rejoin) r.sendAll({ t: 'chat', m: r.chat[r.chat.length - 1] }, p);
-    }
   });
 
   function runtime() {
@@ -260,12 +126,21 @@ function start(port, opts = {}) {
       activePlayers: [...game.rooms.values()].reduce((n, r) => n + r.connected.length, 0),
       publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: notifier.configured, ntfy: { ...notifier.status }, qa };
   }
+  // Retention: delete analytics older than 183 days, in small batches, at startup and then daily.
+  let cleaning = false;
+  const cleanupAnalytics = () => {
+    if (cleaning) return; cleaning = true;
+    const step = () => { if (analytics.cleanup(Date.now(), 500) >= 500) setImmediate(step); else cleaning = false; };
+    setImmediate(step);
+  };
+  cleanupAnalytics();
+  const retentionTimer = setInterval(cleanupAnalytics, opts.retentionMs ?? 86400000);
   const timer = setInterval(() => { analytics.tick(); game.tick(Date.now()); }, 250);
   const sampleTimer = setInterval(() => analytics.sample(runtime()), opts.sampleMs ?? 60000);
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
       port: server.address().port, game, mm, analytics,
-      close: () => { clearInterval(timer); clearInterval(sampleTimer); mm.close(); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      close: () => { clearInterval(timer); clearInterval(retentionTimer); clearInterval(sampleTimer); mm.close(); game.shutdown(); store?.close(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }

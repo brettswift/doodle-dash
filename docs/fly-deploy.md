@@ -18,7 +18,7 @@ Fly takes a daily volume snapshot and keeps 30 days (snapshot_retention in fly.t
 
 ## Restore from a pulled backup
 
-Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl, analytics.jsonl, and state.json. To restore, unpack the chosen file in a temp directory and copy these files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl`, `put analytics.jsonl /data/analytics.jsonl`, and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
+Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl, analytics.jsonl, and state.json. To restore, unpack the chosen file in a temp directory and copy these files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl`, `put analytics.jsonl /data/analytics.jsonl`, and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. Since the SQLite storage change, all data lives in /data/doodle.sqlite. If /data has no doodle.sqlite, the server imports history.jsonl, analytics.jsonl, state.json and archive/*.json.gz from /data once at startup (source files are left untouched). To restore onto a volume that already has doodle.sqlite, move that file aside first (never delete it). Check an import offline with `node import-legacy.js <backup.tar.gz or dir> <new-db-file>`, which prints row counts and checksums and exits non-zero if verification fails. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
 
 ## DNS cut-over
 
@@ -37,7 +37,7 @@ A dedicated domain later only needs another `fly certs add` and DNS record; noth
 
 ## Export endpoint and secrets
 
-GET /admin/export returns a tar.gz of history.jsonl, analytics.jsonl, and state.json. Analytics includes both the current and rotated segment, merged in chronological segment order; operational samples share this store. It needs an Authorization bearer token matching `DOODLE_EXPORT_TOKEN`, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
+GET /admin/export returns a tar.gz of history.jsonl, analytics.jsonl, and state.json, rebuilt from SQLite (every row, nothing is expired or deleted; the best/worst archive is not included). Operational samples share the analytics store. It needs an Authorization bearer token matching `DOODLE_EXPORT_TOKEN`, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
 
 ## Game-start ntfy alerts and QA
 
@@ -67,3 +67,11 @@ Before rollout, read the authenticated dashboard and confirm no active players, 
 When a game completes, the exact best and worst drawings shown on the game-over screen are saved to `/data/archive/<gameId>.json.gz` (gzip JSON: gameId, savedAt, mode, players, canvas 960x800 with strokes normalized 0-1000, best/worst with drawer name, word, topic id, difficulty, drawer points, reason, strokes). Best = most drawer points, worst = fewest, always a different drawing; one-drawing games store best only (`worstNote`); no-ink or abandoned games store nothing. Unselected drawings are never written. Writes are serial, async, tmp+rename; failures are logged and never affect play. Caps: 5000 files / 256 MiB; when full, new writes are refused and logged, nothing is deleted (retention is Brett's call). Not included in /admin/export backups yet; Fly volume snapshots cover it.
 
 Retrieve with the existing admin bearer token: `GET /admin/drawings.json` (list + stats) and `GET /admin/drawings/<gameId>.json`. 401 without token, never public. Render a PNG with `python3 tools/render-drawing.py <record.json> best|worst out.png` (Pillow).
+
+## Ephemeral dev app and scripted QA game
+
+`fly.dev.toml` defines `crayon-breath-dev`: QA mode (`APP_ENV=qa`, so ntfy is always off and records carry the QA flag), short game timers, one machine and its own `crayon_dev_data` volume. It never shares a volume with production. Create it only for a test, then destroy the app and volume (`fly apps destroy`, which removes its volumes and machines) and confirm with `fly apps list`.
+
+`tools/qa-game.js` plays a scripted game against any host: `BASE_URL=https://crayon-breath-dev.fly.dev ADMIN_TOKEN=<token> node tools/qa-game.js`. It covers a three-player private game (one rotation, scoring, everyone bonus, showcase), token resume, play again, public matchmaking with duplicate names, best/worst archive, authenticated analytics and export, social preview, and rejection paths (bad origin, oversize message, bad token, bad name). It prints a JSON report and exits non-zero on any failed check. The host must run the short timers from `fly.dev.toml`. Never run it against production.
+
+To seed dev with a pulled backup, unpack `~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz`, set `DOODLE_EXPORT_TOKEN` as a Fly secret on the dev app, and upload `history.jsonl`, `analytics.jsonl` and `state.json` to `/data` with `fly ssh sftp shell` before the first boot of the app; the server imports them into SQLite once at startup.

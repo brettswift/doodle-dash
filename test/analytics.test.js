@@ -63,3 +63,51 @@ test('native ws clients: gameStarted lists usernames once; legacy consent flag i
     a.ws.close(); b.ws.close();
   } finally { s.close(); }
 });
+
+test('analytics retention: cleanup removes only analytics older than 183 days at a fixed clock, in batches', () => {
+  const { Store } = require('../store');
+  const { Analytics, RETENTION_DAYS } = require('../analytics');
+  assert.equal(RETENTION_DAYS, 183);
+  const store = new Store(':memory:'); const DAY = 86400000, now = 1800000000000;
+  const a = new Analytics({ store });
+  for (let i = 0; i < 5; i++) store.addEvent({ at: now - 184 * DAY - i, type: 'landing' });
+  store.addEvent({ at: now - 183 * DAY + 1000, type: 'landing' });   // just inside
+  store.addEvent({ at: now - 1000, type: 'landing' });
+  store.putDrawing(1, { tid: 't', g: 'g', out: 'ok' });
+  assert.equal(a.cleanup(now, 3), 3);          // one batch
+  assert.equal(a.cleanup(now, 3), 2);          // rest, fewer than limit => done
+  assert.equal(store.eventLines().length, 2);
+  assert.equal(store.drawingCount(), 1);
+});
+
+test('server runs analytics retention cleanup at startup', async () => {
+  const { Store } = require('../store');
+  const dir = tmp(); const st = new Store(path.join(dir, 'doodle.sqlite'));
+  st.addEvent({ at: Date.now() - 200 * 86400000, type: 'landing' }); st.addEvent({ at: Date.now(), type: 'landing' }); st.close();
+  const s = await start(0, { dataDir: dir, exportToken: 't', analyticsEnabled: true, qa: true, sampleMs: 3600000 });
+  try {
+    await new Promise((r) => setTimeout(r, 100));
+    const lines = s.analytics.store.eventLines();
+    assert.equal(lines.filter((l) => JSON.parse(l).at < Date.now() - 183 * 86400000).length, 0);
+    assert.ok(lines.length >= 1);
+  } finally { s.close(); }
+});
+
+test('privacy page states analytics is kept 6 months', () => {
+  const priv = fs.readFileSync(path.join(__dirname, '../public/privacy.html'), 'utf8');
+  assert.ok(/6 months/.test(priv));
+  assert.ok(!/up to 90 days/.test(priv));
+});
+
+test('private lobby status can come from an explicit live-lobby set instead of the process run id', () => {
+  const { Analytics } = require('../analytics');
+  const mem = []; const store = { addEvent: (e) => mem.push(e), events: () => mem, eventBytes: () => 0 };
+  const a = new Analytics({ store, enabled: true, qa: false, log: () => {} });
+  mem.push({ v: 1, at: Date.now(), type: 'privateLobbyCreated', lobbyId: 'L1', runId: 'some-other-object' });
+  mem.push({ v: 1, at: Date.now(), type: 'privateLobbyCreated', lobbyId: 'L2', runId: 'some-other-object' });
+  const plain = a.summary(a.records()).privateLobbies;
+  assert.equal(plain.unknownAfterRestart, 2, 'without a live set the Node run id rule applies');
+  const live = a.summary(a.records(), { waiting: new Set(['L1']) }).privateLobbies;
+  assert.equal(live.currentlyWaiting, 1);
+  assert.equal(live.unknownAfterRestart, 1);
+});

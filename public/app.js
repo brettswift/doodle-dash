@@ -17,10 +17,13 @@ try { sess = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { sess = n
 const saveSess = () => { try { sess ? localStorage.setItem(KEY, JSON.stringify(sess)) : localStorage.removeItem(KEY); } catch {} };
 
 // ---------- connection ----------
-function connect() {
+// room: connect straight to that room's server object (Cloudflare host; the Node host ignores the parameter).
+// Without it a saved session goes to its own room, anything else to the entry point, which answers {t:'goto'}.
+function connect(room) {
   wantOpen = true;
   if (ws && ws.readyState <= 1) return;
-  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  room = room || (sess && sess.code);
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (room ? '?room=' + encodeURIComponent(room) : '');
   ws = new WebSocket(url);
   const mine = ws;
   ws.onopen = () => {
@@ -45,6 +48,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && wa
 
 function onMsg(m) {
   switch (m.t) {
+    case 'goto': { // the entry point sends us to the room's own connection; replay the message there (public queue state is kept until joined)
+      const old = ws; ws = null; if (old) { old.onclose = null; old.close(); }
+      pendingEnter = m.msg; connect(m.code); break;
+    }
     case 'joined':
       pub = null; sess = { code: m.code, token: m.token }; saveSess(); break;
     case 'public': pub = { n: m.n, max: m.max, remaining: m.remaining, at: Date.now() }; show('waiting'); renderWait(); break;

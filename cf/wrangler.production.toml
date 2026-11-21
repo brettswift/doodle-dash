@@ -1,0 +1,42 @@
+# Crayon Breath on Cloudflare: PRODUCTION configuration. Not deployed; step 8 deploys it only after Brett's explicit go.
+# Differences from wrangler.toml (dev): APP_ENV=production (analytics not tagged QA, ntfy alerts allowed, dev-only /admin/import
+# answers 404), separate Worker name (separate Durable Object namespaces from the dev Worker), no workers.dev URL, NO routes
+# and no DNS (cutover adds the crayonbreath.com route/custom domain deliberately).
+#
+# Secrets (names only; set with `wrangler secret put NAME -c wrangler.production.toml`, never written in this file):
+#   DOODLE_EXPORT_TOKEN    bearer token for /admin/* endpoints
+#   NTFY_BASE_URL          ntfy server base URL for game-start alerts
+#   NTFY_TOPIC             ntfy topic (defaults to crayon_breath when unset)
+#   IMPORT_ENABLED         "true" ONLY during the one-time cutover import (opens POST /admin/import); delete the secret afterwards
+#   NTFY_ALERTS_ENABLED    must be the string "true" for alerts to be sent
+# Build metadata: pass `--var GIT_SHA:<sha>` at deploy time.
+name = "crayon-breath"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]
+workers_dev = false
+preview_urls = false
+
+[assets]
+directory = "../public"
+html_handling = "none"
+binding = "ASSETS"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "DIRECTORY"
+class_name = "Directory"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Directory", "Room"]
+
+[alias]
+"node:sqlite" = "./src/empty-sqlite.js"
+
+[vars]
+APP_ENV = "production"
