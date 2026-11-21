@@ -54,3 +54,11 @@ Check offline with `npx wrangler deploy --dry-run -c wrangler.production.toml`. 
 - The Directory applies a batch in one SQL transaction (history rows, events, retire, ingest marker), rechecks the marker inside that transaction, and updates its in-memory history and room registry only after the commit. A failed history or archive write rejects the batch so the Room retries; a deliberate "archive full" refusal is still acknowledged and nothing is deleted.
 - An unallocated room code is refused before a socket is accepted and creates no storage. A Room snapshot keeps only the current best and worst showcase drawings (same first-best / last-worst tie rules), so it stays far below the 8 MB SQL value limit; if a snapshot write fails the old snapshot is dropped and the write retried on the next event.
 - Dashboard health reports the real notifier configuration and sums delivery counters from the live Rooms (counters reset when a Room object is evicted). Private-lobby "waiting" status comes from the live Rooms, not from the Directory's process id.
+
+## Production cutover (step 8)
+
+1. Deploy `cf/wrangler.production.toml` (`wrangler deploy -c wrangler.production.toml --var GIT_SHA:<sha>`), secrets set with `wrangler secret put` on stdin: DOODLE_EXPORT_TOKEN, NTFY_BASE_URL, NTFY_TOPIC, NTFY_ALERTS_ENABLED, and IMPORT_ENABLED=true only for the import.
+2. Freeze Fly (activeRooms 0), take a full tarball of `/data`, verify sha256.
+3. `BASE_URL=... ADMIN_TOKEN=... node tools/import-to-cf.js <tarball>` and compare counts/checksums; then `wrangler secret delete IMPORT_ENABLED` so `/admin/import` answers 404 again.
+4. Attach crayonbreath.com and www as Workers Custom Domains, verify, then destroy Fly.
+5. Rollback: `wrangler rollback`, or redeploy an earlier version. Backup: nightly pull of `GET /admin/export` (bearer token) from https://crayonbreath.com.

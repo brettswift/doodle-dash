@@ -2,7 +2,7 @@
 'use strict';
 // Seed a Cloudflare DEV Worker from a pulled legacy backup and verify the result through /admin/export.
 // Usage: BASE_URL=https://crayon-breath-dev.<subdomain>.workers.dev ADMIN_TOKEN=... node tools/import-to-cf.js <backup.tar.gz | legacy dir>
-// Only works against a Worker with APP_ENV!=production. Reads local files only; never contacts production.
+// Works against a dev Worker, or a production Worker only while its IMPORT_ENABLED secret is "true" (cutover). Reads local files only.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), zlib = require('node:zlib'), crypto = require('node:crypto');
 const { sources, parseHistory } = require('../import-legacy');
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');

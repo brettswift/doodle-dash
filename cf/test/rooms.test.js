@@ -390,8 +390,18 @@ test('finding 6: a freshly created private lobby is reported as waiting, not unk
 });
 
 test('production-mode Directory refuses /admin/import', async () => {
-  const code = await inDir(async (i) => { i.qa = false; const r = await i.fetch(new Request('https://crayon.test/admin/import', { method: 'POST', headers: bearer, body: '{}' })); return r.status; });
+  const code = await inDir(async (i) => { i.qa = false; i.importOpen = false; const r = await i.fetch(new Request('https://crayon.test/admin/import', { method: 'POST', headers: bearer, body: '{}' })); return r.status; });
   expect(code).toBe(404);
+});
+
+test('production Directory import is closed by default and opens only with the IMPORT_ENABLED gate', async () => {
+  const run = async (gate) => inDir(async (i) => {
+    i.qa = false; i.importOpen = gate;
+    const post = (h) => i.fetch(new Request('https://crayon.test/admin/import', { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: '{"tiers":[]}' }));
+    return { noAuth: (await post({})).status, auth: (await post(bearer)).status };
+  });
+  expect(await run(false)).toEqual({ noAuth: 404, auth: 404 });
+  expect(await run(true)).toEqual({ noAuth: 401, auth: 200 });
 });
 
 test('Room retries a failed local outbox write before delivery, never sends an unpersisted batch, and ingests once after restore', async () => {

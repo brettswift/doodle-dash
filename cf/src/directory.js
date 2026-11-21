@@ -33,6 +33,7 @@ export class Directory extends DurableObject {
     this.log = (...a) => console.error('[doodle-dir]', ...a);
     this.store = new DirectoryStore(ctx.storage, this.log);
     this.qa = env.APP_ENV !== 'production';
+    this.importOpen = this.qa || env.IMPORT_ENABLED === 'true'; // production migration gate: set the secret for the cutover import, delete it afterwards
     this.exportToken = env.DOODLE_EXPORT_TOKEN;
     this.exportBucket = { tokens: 6, last: Date.now() };
     if (!this.store.getMeta('ip_salt')) this.store.setMeta('ip_salt', randomBytes(16).toString('hex'));
@@ -214,8 +215,8 @@ export class Directory extends DurableObject {
       return json(body ? 200 : 404, body || { error: 'not found' });
     }
     if (path === '/admin/import') {
-      // Dev/QA seeding only (the migration rehearsal in step 6): refuses outright on a production-configured Worker.
-      if (!this.qa) return plain(404, 'not found');
+      // Seeding for dev/QA, and the one-time production migration import while IMPORT_ENABLED=true; 404 otherwise.
+      if (!this.importOpen) return plain(404, 'not found');
       if (!auth()) return denied();
       if (request.method !== 'POST') return plain(405, 'method not allowed');
       let b; try { b = await request.json(); } catch { return plain(400, 'bad json'); }

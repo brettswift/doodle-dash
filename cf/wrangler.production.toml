@@ -7,6 +7,7 @@
 #   DOODLE_EXPORT_TOKEN    bearer token for /admin/* endpoints
 #   NTFY_BASE_URL          ntfy server base URL for game-start alerts
 #   NTFY_TOPIC             ntfy topic (defaults to crayon_breath when unset)
+#   IMPORT_ENABLED         "true" ONLY during the one-time cutover import (opens POST /admin/import); delete the secret afterwards
 #   NTFY_ALERTS_ENABLED    must be the string "true" for alerts to be sent
 # Build metadata: pass `--var GIT_SHA:<sha>` at deploy time.
 name = "crayon-breath"
