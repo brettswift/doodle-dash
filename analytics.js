@@ -1,8 +1,7 @@
 'use strict';
-// Optional first-party analytics. JSONL is append-only, bounded, and never blocks gameplay.
-const fs = require('node:fs');
-const path = require('node:path');
+// Optional first-party analytics. Events are appended to the SQLite analytics_events table; read views are windowed, rows are never deleted.
 const crypto = require('node:crypto');
+const { openStore } = require('./store');
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const DAY = 86400000;
@@ -10,52 +9,19 @@ const allowed = new Set(['landing', 'nameEntered', 'intent', 'queueEntered', 'qu
 const clean = (v, n = 80) => String(v || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, n);
 
 class Analytics {
-  constructor({ dir, log = () => {}, enabled = true, qa = false } = {}) {
-    this.dir = dir; this.log = log; this.enabled = !!(dir && enabled); this.file = dir && path.join(dir, 'analytics.jsonl');
-    this.qa = !!qa; this.pending = 0; this.dropped = 0; this.writing = false; this.queue = []; this.started = Date.now();
+  constructor({ dir, store = null, log = () => {}, enabled = true, qa = false } = {}) {
+    this.dir = dir; this.log = log; this.qa = !!qa; this.pending = 0; this.dropped = 0; this.writing = false; this.queue = []; this.started = Date.now();
+    this.store = enabled ? (store || (dir ? openStore(dir, { log }) : null)) : null; this.enabled = !!this.store;
     this.counts = Object.create(null); this.lastLag = 0; this.lastTick = process.hrtime.bigint();
     this.runId = crypto.randomBytes(8).toString('hex'); this.cpu = process.cpuUsage(); this.cpuAt = process.hrtime.bigint();
-    this.cpuPercent = null; this.lastMaintenance = 0;
-    if (this.enabled) { try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { this.enabled = false; this.log('analytics disabled', e.message); } }
-    if (this.enabled) this.maintain();
+    this.cpuPercent = null;
   }
   tick() { const now = process.hrtime.bigint(); const elapsed = Number(now - this.lastTick) / 1e6; this.lastLag = Math.max(0, elapsed - 250); this.lastTick = now; }
   event(type, props = {}) {
     if (!this.enabled || !allowed.has(type)) return;
-    if (this.queue.length >= 200) { this.dropped++; return; }
     const e = { ...props, v: 1, at: Date.now(), type, qa: this.qa || undefined, runId: this.runId };
-    this.queue.push(JSON.stringify(e) + '\n'); this.counts[type] = (this.counts[type] || 0) + 1;
-    if (!this.writing) this.flush();
-  }
-  flush() {
-    if (!this.queue.length || !this.enabled) return;
-    this.writing = true; const text = this.queue.splice(0).join(''); this.pending += Buffer.byteLength(text);
-    fs.appendFile(this.file, text, (err) => {
-      this.pending -= Buffer.byteLength(text); this.writing = false;
-      if (err) { this.dropped++; this.log('analytics write failed', err.message); }
-      else this.rotate();
-      if (Date.now() - this.lastMaintenance > 3600000) this.maintain();
-      if (this.queue.length) this.flush();
-    });
-  }
-  rotate() {
-    try {
-      if (fs.statSync(this.file).size <= MAX_BYTES) return;
-      const old = `${this.file}.1`; try { fs.unlinkSync(old); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      fs.renameSync(this.file, old);
-    } catch (e) { this.log('analytics rotate failed', e.message); }
-  }
-  maintain() {
-    if (!this.enabled || this.writing) return;
-    this.lastMaintenance = Date.now();
-    try {
-      for (const file of [`${this.file}.1`, this.file]) {
-        let raw; try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-        const lines = raw.split('\n').filter(Boolean);
-        const kept = lines.filter((line) => { try { const e = JSON.parse(line); return Number.isFinite(e.at) && e.at > Date.now() - (e.type === 'operation' ? 7 : 90) * DAY; } catch { return false; } });
-        if (kept.length !== lines.length) { fs.writeFileSync(`${file}.tmp`, kept.length ? kept.join('\n') + '\n' : ''); fs.renameSync(`${file}.tmp`, file); }
-      }
-    } catch (e) { this.log('analytics retention failed', e.message); }
+    try { this.store.addEvent(e); this.counts[type] = (this.counts[type] || 0) + 1; }
+    catch (err) { this.dropped++; this.log('analytics write failed', err.message); }
   }
   sample(extra = {}) {
     const now = process.hrtime.bigint(), cpu = process.cpuUsage();
@@ -70,7 +36,7 @@ class Analytics {
   }
   health(extra = {}) {
     const mem = process.memoryUsage(); let size = 0;
-    try { size = fs.statSync(this.file).size; } catch {}
+    try { if (this.store) size = this.store.eventBytes(); } catch {}
     return { ...extra, analyticsEnabled: this.enabled, qa: this.qa, cpuPercent: this.cpuPercent, hostCpuPercent: null, hostMemoryBytes: null,
       uptimeMs: Date.now() - this.started, rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal,
       eventLoopLagMs: Math.round(this.lastLag), openSockets: extra.openSockets || 0, activeRooms: extra.activeRooms || 0,
@@ -79,9 +45,8 @@ class Analytics {
   }
   records() {
     if (!this.enabled) return [];
-    let raw = '';
-    for (const file of [`${this.file}.1`, this.file]) { try { raw += fs.readFileSync(file, 'utf8') + '\n'; } catch (e) { if (e.code !== 'ENOENT') throw e; } }
-    return raw.split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).sort((a, b) => a.at - b.at);
+    const now = Date.now(); // read view only: older rows stay in the database
+    return this.store.events(now - 90 * DAY, now - 7 * DAY);
   }
   summary(records = this.records()) {
     const now = Date.now(), recs = records.filter((x) => x.at > now - 90 * DAY && !x.qa && x.type !== 'operation');

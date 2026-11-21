@@ -18,7 +18,7 @@ Fly takes a daily volume snapshot and keeps 30 days (snapshot_retention in fly.t
 
 ## Restore from a pulled backup
 
-Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl, analytics.jsonl, and state.json. To restore, unpack the chosen file in a temp directory and copy these files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl`, `put analytics.jsonl /data/analytics.jsonl`, and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
+Buddyserver pulls /admin/export nightly at 03:30 Mountain time and keeps the newest 30 files in ~/.hermes/backups/doodle/doodle-YYYYMMDD.tar.gz. Each holds history.jsonl, analytics.jsonl, and state.json. To restore, unpack the chosen file in a temp directory and copy these files to the volume: `fly ssh sftp shell --app doodle-dash-prod`, then `put history.jsonl /data/history.jsonl`, `put analytics.jsonl /data/analytics.jsonl`, and `put state.json /data/state.json`. Restart the machine with `fly machine restart <id>` so the server reloads them. Since the SQLite storage change, all data lives in /data/doodle.sqlite. If /data has no doodle.sqlite, the server imports history.jsonl, analytics.jsonl, state.json and archive/*.json.gz from /data once at startup (source files are left untouched). To restore onto a volume that already has doodle.sqlite, move that file aside first (never delete it). Check an import offline with `node import-legacy.js <backup.tar.gz or dir> <new-db-file>`, which prints row counts and checksums and exits non-zero if verification fails. To test a backup without touching production, unpack it into a temp directory and run `DATA_DIR=<dir> PORT=8099 node server.js`; /stats should show the history counts.
 
 ## DNS cut-over
 
@@ -37,7 +37,7 @@ A dedicated domain later only needs another `fly certs add` and DNS record; noth
 
 ## Export endpoint and secrets
 
-GET /admin/export returns a tar.gz of history.jsonl, analytics.jsonl, and state.json. Analytics includes both the current and rotated segment, merged in chronological segment order; operational samples share this store. It needs an Authorization bearer token matching `DOODLE_EXPORT_TOKEN`, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
+GET /admin/export returns a tar.gz of history.jsonl, analytics.jsonl, and state.json, rebuilt from SQLite (every row, nothing is expired or deleted; the best/worst archive is not included). Operational samples share the analytics store. It needs an Authorization bearer token matching `DOODLE_EXPORT_TOKEN`, answers 404 when the secret is unset, and is rate limited. Rotate with `fly secrets set DOODLE_EXPORT_TOKEN=<new>` and update the same variable in ~/.hermes/.env on buddyserver.
 
 ## Game-start ntfy alerts and QA
 

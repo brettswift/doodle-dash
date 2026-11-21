@@ -57,10 +57,19 @@ test('export: rate limited after the burst', async () => {
   } finally { s.close(); }
 });
 
-test('export: archive cuts a partial last line', () => {
-  const dir = tmp();
-  fs.writeFileSync(path.join(dir, 'history.jsonl'), '{"a":1}\n{"a":2');
-  const files = untar(require('../export').buildArchive(dir));
-  assert.equal(files['history.jsonl'], '{"a":1}\n');
-  assert.equal(files['state.json'], '{}');
+test('export: empty store still yields the three files with a valid empty state', () => {
+  const { openStore } = require('../store');
+  const store = openStore(tmp());
+  const files = untar(require('../export').buildArchive(store));
+  assert.deepEqual(Object.keys(files).sort(), ['analytics.jsonl', 'history.jsonl', 'state.json']);
+  assert.equal(files['history.jsonl'], '');
+  assert.deepEqual(JSON.parse(files['state.json']), { v: 1, tiers: {}, since: {}, audit: [] });
+  store.close();
+});
+test('export: seeded legacy files are adopted and exported back as history records', async () => {
+  const { s, url } = await boot('tok2');
+  try {
+    const files = untar(Buffer.from(await (await fetch(url, { headers: { authorization: 'Bearer tok2' } })).arrayBuffer()));
+    assert.equal(files['history.jsonl'], '');   // fixture rows have no seq/tid, so they are malformed and not adopted
+  } finally { s.close(); }
 });

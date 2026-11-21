@@ -80,10 +80,10 @@ test('write errors do not crash; full cap refuses without deleting', async () =>
   assert.equal(await a.save({ gameId: '22222222' }, sel), 'full');
   assert.equal(a.list().length, 1); assert.ok(logs.some((l) => /full/.test(l)));
   const b = new Archive({ dir: tmp(), log: (...x) => logs.push(x.join(' ')) });
-  fs.rmSync(b.dir, { recursive: true });
+  b.store.close(); // storage failure
   assert.equal(await b.save({ gameId: '33333333' }, sel), 'error');
   assert.ok(logs.some((l) => /write failed/.test(l)));
-  // restart: counts reloaded from disk
+  // restart: counts reloaded from the database
   assert.equal(new Archive({ dir, maxFiles: 1 }).files, 1);
 });
 test('admin retrieval needs bearer token', async () => {
