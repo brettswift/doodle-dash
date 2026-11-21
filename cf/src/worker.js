@@ -4,7 +4,7 @@ import { FILES, SEC } from '../../static-files.js';
 export { Directory } from './directory.js';
 export { Room } from './room.js';
 
-const HUB_PATHS = new Set(['/stats', '/admin/analytics', '/admin/analytics.json', '/admin/drawings.json', '/admin/export']);
+const HUB_PATHS = new Set(['/stats', '/admin/analytics', '/admin/analytics.json', '/admin/drawings.json', '/admin/export', '/admin/import']);
 const isHubPath = (p) => HUB_PATHS.has(p) || /^\/admin\/drawings\/[0-9a-f]{8}\.json$/.test(p);
 
 // Client-supplied internal headers must never reach a Durable Object: strip every x-hub-*, then set the trusted values.

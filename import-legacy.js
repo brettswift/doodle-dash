@@ -112,7 +112,7 @@ function verifyLegacy(store, dir) {
   return { ok: !problems.length, problems, report: rep };
 }
 
-module.exports = { importLegacy, verifyLegacy, parseHistory };
+module.exports = { importLegacy, verifyLegacy, parseHistory, sources };
 
 if (require.main === module) {
   const { openStore } = require('./store');

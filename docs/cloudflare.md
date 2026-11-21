@@ -31,3 +31,13 @@ Write budget, measured: a 2-player, 1-rotation game writes 18 SQL rows in total 
 ## Commands (from `cf/`)
 - `npm test`: Durable Object SQLite contract, Worker, Room and Directory tests under workerd (vitest), then local `wrangler dev` runs the BASE_URL QA game client (also two games at once), a real Room hibernation check and a bundle check.
 - `npm run dry`: bundle dry-run, no network or credentials.
+
+## Dev deploy and live checks (step 6)
+The Worker is named `crayon-breath-dev` and is deployed only for tests on workers.dev (no zone routes, no DNS). Deploy from `cf/` with the Cloudflare token from the environment: `wrangler deploy --var GIT_SHA:<sha> CHOOSE_MS:5000 DRAW_MS:10000 RESULT_MS:2500 GRACE_MS:2000 LOBBY_FIRST_MS:2500 LOBBY_RESET_MS:1000`, then `wrangler secret put DOODLE_EXPORT_TOKEN`. `APP_ENV=qa` (the default in wrangler.toml) disables ntfy and tags analytics.
+
+Seed it from a pulled backup with `BASE_URL=... ADMIN_TOKEN=... node tools/import-to-cf.js <backup.tar.gz>`. This uses `POST /admin/import`, which answers 404 when `APP_ENV=production` and needs the bearer token. The tool re-reads the result through `/admin/export` and compares the history checksum and every analytics line byte for byte.
+
+`cf/test-node/live-checks.mjs` runs the deployed-only checks: social preview bytes, admin auth, archive listing, origin and size refusal, a 40 s idle then wake with both seats, token resume, and a public match where one client drops during the hand-over. Remove the Worker with `wrangler delete crayon-breath-dev` when done; deleting it also removes its Durable Object storage.
+
+## Analytics retention
+Analytics rows older than 183 days are deleted in batches of 500 by `Store.pruneEvents`, called through `Analytics.cleanup`. Node runs it at startup and every 24 h. The Directory Durable Object runs it from a daily alarm (up to 20 batches per run, then re-armed after 60 s if more remain). History, tiers and the best/worst archive are never deleted. The dashboard still reads 90 days of product records and 7 days of service samples.

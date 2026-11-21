@@ -61,5 +61,19 @@ const cases = [
     assert.throws(() => s.archivePut('aaaaaaaa', 'x', buf, 'z'), /./); // never overwrites
     assert.deepEqual([...s.archiveGet('aaaaaaaa')], [...buf]);
   }],
+  ['pruneEvents: deletes only analytics rows older than cutoff, at most limit per call, returns count', (make, assert) => {
+    const s = make();
+    for (let i = 1; i <= 7; i++) s.addEvent({ at: i * 10, type: 'landing' });
+    s.addEvent({ at: 5, type: 'operation' });
+    s.putDrawing(1, { tid: 't', g: 'g', out: 'ok' }); s.setTier('cat', 'hard', 1, { at: 1 });
+    s.archivePut('cccccccc', '2026-01-01T00:00:00.000Z', Buffer.from('z'), 'h');
+    assert.equal(s.pruneEvents(0, 100), 0);
+    assert.equal(s.pruneEvents(45, 2), 2);            // batch limit respected
+    assert.equal(s.eventLines().length, 6);
+    assert.equal(s.pruneEvents(45, 100), 3);          // at 30,40 and the old operation sample (at 5); at=10,20 went in batch 1 or here
+    assert.deepEqual(s.events(0, 0).map((e) => e.at), [50, 60, 70]);
+    assert.equal(s.pruneEvents(45, 100), 0);
+    assert.equal(s.drawingCount(), 1); assert.deepEqual(s.loadTiers().tiers, { cat: 'hard' }); assert.equal(s.archiveStats().files, 1);
+  }],
 ];
 module.exports = { cases };

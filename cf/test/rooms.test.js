@@ -163,3 +163,33 @@ test('a full 2-player game writes well under 100 SQL rows across Room and Direct
   const arch = await (await get('/admin/drawings.json', { headers: bearer })).json();
   expect(arch.stats.files).toBeGreaterThanOrEqual(1); // best/worst archive written by the Directory
 }, 30000);
+
+test('Directory alarm deletes analytics older than 183 days only, keeps history/tiers/archive, and re-arms daily', async () => {
+  const DAY = 86400000;
+  await inDir(async (inst, state) => {
+    const st = inst.store;
+    for (let i = 0; i < 3; i++) st.addEvent({ at: Date.now() - 200 * DAY - i, type: 'landing' });
+    st.addEvent({ at: Date.now() - 10 * DAY, type: 'landing' });
+    st.putDrawing(990001, { tid: 'cat', g: 'g', out: 'ok' });
+  });
+  const stub = DIR();
+  const { runDurableObjectAlarm } = await import('cloudflare:test');
+  await inDir(async (inst, state) => { await state.storage.setAlarm(Date.now() + 10); });
+  expect(await runDurableObjectAlarm(stub)).toBe(true);
+  const after = await inDir(async (inst, state) => ({ old: inst.store.eventLines().map((l) => JSON.parse(l)).filter((e) => e.at < Date.now() - 183 * DAY).length, drawing: inst.store.drawingCount() > 0, alarm: await state.storage.getAlarm() }));
+  expect(after.old).toBe(0); expect(after.drawing).toBe(true);
+  expect(after.alarm).toBeGreaterThan(Date.now() + 20 * 3600000);
+});
+
+test('dev import endpoint: token required, loads drawings/tiers/audit/events/archive chunks, export reflects them', async () => {
+  const body = { drawings: [[7001, { tid: 'cat', g: 'gimp', out: 'ok' }], [7002, { tid: 'dog', g: 'gimp', out: 'abandoned' }]],
+    tiers: [['cat', 'hard', 7001]], audit: [{ at: 5, id: 'cat' }], events: [JSON.stringify({ at: 123456, type: 'landing', v: 1 })],
+    archive: [{ id: 'abcdef01', savedAt: '2026-11-01T00:00:00.000Z', b64: Buffer.from('gz').toString('base64'), sha: 'h' }] };
+  const post = (h) => get('/admin/import', { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: JSON.stringify(body) });
+  expect((await post({})).status).toBe(401);
+  expect((await get('/admin/import', { headers: bearer })).status).toBe(405);
+  const r = await post(bearer); expect(r.status).toBe(200);
+  expect(await r.json()).toEqual({ drawings: 2, tiers: 1, audit: 1, events: 1, archive: 1 });
+  const d = await inDir(async (inst) => ({ n: inst.store.drawingCount(), tiers: inst.store.loadTiers().tiers, ev: inst.store.eventLines().includes(body.events[0]), arc: inst.store.archiveHas('abcdef01'), seq: inst.history.seq }));
+  expect(d.n).toBeGreaterThanOrEqual(2); expect(d.tiers.cat).toBe('hard'); expect(d.ev).toBe(true); expect(d.arc).toBe(true);
+});

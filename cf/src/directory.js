@@ -55,12 +55,25 @@ export class Directory extends DurableObject {
     });
   }
   restore() {
+    void this.armRetention();
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() || {};
       const entry = this.makeEntry(ws, att);
       this.sessions.set(ws, entry);
       if (att.q) entry.requeue(att.q);
     }
+  }
+  // Daily analytics retention (183 days) as a Durable Object alarm: small batches, no recurring timer, re-armed after each run.
+  async armRetention(afterMs = 86400000) {
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null) await this.ctx.storage.setAlarm(Date.now() + afterMs);
+  }
+  async alarm() {
+    let more = false;
+    try {
+      for (let i = 0; i < 20; i++) { if (this.analytics.cleanup(Date.now(), 500) < 500) break; if (i === 19) more = true; }
+    } catch (e) { this.log('retention alarm failed', e.message); }
+    await this.ctx.storage.setAlarm(Date.now() + (more ? 60000 : 86400000));
   }
   evictForTest() { this.mm.close(); this.build(); this.restore(); }
 
@@ -183,6 +196,23 @@ export class Directory extends DurableObject {
       const arc = this.archive;
       const body = path === '/admin/drawings.json' ? { stats: arc.stats(), games: arc.list() } : arc.read(path.slice(16, 24));
       return json(body ? 200 : 404, body || { error: 'not found' });
+    }
+    if (path === '/admin/import') {
+      // Dev/QA seeding only (the migration rehearsal in step 6): refuses outright on a production-configured Worker.
+      if (!this.qa) return plain(404, 'not found');
+      if (!auth()) return denied();
+      if (request.method !== 'POST') return plain(405, 'method not allowed');
+      let b; try { b = await request.json(); } catch { return plain(400, 'bad json'); }
+      const out = { drawings: 0, tiers: 0, audit: 0, events: 0, archive: 0 };
+      this.store.tx(() => {
+        for (const [seq, rec] of b.drawings || []) { this.store.putDrawing(seq, rec); out.drawings++; }
+        for (const [id, tier, since] of b.tiers || []) { this.store.putTier(id, tier, since); out.tiers++; }
+        for (const a of b.audit || []) { this.store.addAudit(a); out.audit++; }
+        for (const line of b.events || []) { const e = JSON.parse(line); if (typeof e.type === 'string' && Number.isFinite(e.at)) { this.store.addEvent(e, line); out.events++; } }
+        for (const a of b.archive || []) { this.store.archivePut(a.id, a.savedAt, Buffer.from(a.b64, 'base64'), a.sha); out.archive++; }
+      });
+      this.history.recs.clear(); this.history.last.clear(); this.history.load();
+      return json(200, out);
     }
     if (path === '/admin/export') {
       if (!this.exportToken) return plain(404, 'not found');

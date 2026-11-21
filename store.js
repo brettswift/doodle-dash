@@ -55,6 +55,8 @@ class Store {
     return this.q("SELECT json FROM analytics_events WHERE (type<>'operation' AND at>?) OR (type='operation' AND at>?) ORDER BY at, id")
       .all(productSince, opsSince).map((r) => { try { return JSON.parse(r.json); } catch { return null; } }).filter(Boolean);
   }
+  // Retention: delete analytics rows older than beforeAt, at most limit rows per call; returns the number deleted. Analytics only.
+  pruneEvents(beforeAt, limit = 500) { return this.q('DELETE FROM analytics_events WHERE id IN (SELECT id FROM analytics_events WHERE at<? ORDER BY id LIMIT ?) RETURNING id').all(beforeAt, limit).length; }
   eventLines() { return this.q('SELECT json FROM analytics_events ORDER BY id').all().map((r) => r.json); }
   eventBytes() { return this.q('SELECT coalesce(sum(length(json)),0) n FROM analytics_events').get().n; }
 

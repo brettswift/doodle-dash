@@ -1,6 +1,6 @@
 // Durable Object SQLite implementation of the Store interface (same methods as ../../store.js, which uses node:sqlite).
 // Uses only synchronous SQL on ctx.storage so a Room/Hub can keep the shared synchronous game core unchanged.
-// Nothing here deletes history, analytics or archive rows. The `rooms` table is the only transient data (live room snapshots).
+// Only pruneEvents deletes anything (analytics older than the retention period); history, tiers and archive are never deleted. The `rooms` table is the only transient data (live room snapshots).
 import schema from '../../schema.js';
 
 const { SCHEMA_VERSION, DDL } = schema;
@@ -54,6 +54,7 @@ export class DoStore {
     return this.run("SELECT json FROM analytics_events WHERE (type<>'operation' AND at>?) OR (type='operation' AND at>?) ORDER BY at, id", productSince, opsSince)
       .map((r) => { try { return JSON.parse(r.json); } catch { return null; } }).filter(Boolean);
   }
+  pruneEvents(beforeAt, limit = 500) { return this.run('DELETE FROM analytics_events WHERE id IN (SELECT id FROM analytics_events WHERE at<? ORDER BY id LIMIT ?) RETURNING id', beforeAt, limit).length; }
   eventLines() { return this.run('SELECT json FROM analytics_events ORDER BY id').map((r) => r.json); }
   eventBytes() { return this.run('SELECT coalesce(sum(length(json)),0) n FROM analytics_events')[0].n; }
 

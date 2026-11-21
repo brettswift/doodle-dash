@@ -126,12 +126,21 @@ function start(port, opts = {}) {
       activePlayers: [...game.rooms.values()].reduce((n, r) => n + r.connected.length, 0),
       publicQueue: mm.lobbies.reduce((n, l) => n + l.members.length, 0), ntfyConfigured: notifier.configured, ntfy: { ...notifier.status }, qa };
   }
+  // Retention: delete analytics older than 183 days, in small batches, at startup and then daily.
+  let cleaning = false;
+  const cleanupAnalytics = () => {
+    if (cleaning) return; cleaning = true;
+    const step = () => { if (analytics.cleanup(Date.now(), 500) >= 500) setImmediate(step); else cleaning = false; };
+    setImmediate(step);
+  };
+  cleanupAnalytics();
+  const retentionTimer = setInterval(cleanupAnalytics, opts.retentionMs ?? 86400000);
   const timer = setInterval(() => { analytics.tick(); game.tick(Date.now()); }, 250);
   const sampleTimer = setInterval(() => analytics.sample(runtime()), opts.sampleMs ?? 60000);
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
       port: server.address().port, game, mm, analytics,
-      close: () => { clearInterval(timer); clearInterval(sampleTimer); mm.close(); game.shutdown(); store?.close(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      close: () => { clearInterval(timer); clearInterval(retentionTimer); clearInterval(sampleTimer); mm.close(); game.shutdown(); store?.close(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }

@@ -1,5 +1,5 @@
 'use strict';
-// Optional first-party analytics. Events are appended to the SQLite analytics_events table; read views are windowed, rows are never deleted.
+// Optional first-party analytics. Events are appended to the SQLite analytics_events table; read views are windowed; rows older than 183 days are removed by cleanup().
 const crypto = require('node:crypto');
 const { openStore } = require('./store');
 
@@ -9,6 +9,7 @@ const cpuUse = () => { try { return process.cpuUsage(); } catch { return null; }
 const memUse = () => { try { return process.memoryUsage(); } catch { return {}; } };
 const MAX_BYTES = 8 * 1024 * 1024;
 const DAY = 86400000;
+const RETENTION_DAYS = 183; // owner decision: analytics kept 6 months
 const allowed = new Set(['landing', 'nameEntered', 'intent', 'queueEntered', 'queueLeft', 'queueTimeout', 'lobbyFormed', 'gameStarted', 'gameEnded', 'gameAbandoned', 'privateLobbyCreated', 'privateLobbyClosed', 'connect', 'reconnect', 'error', 'operation']);
 const clean = (v, n = 80) => String(v || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, n);
 
@@ -46,6 +47,11 @@ class Analytics {
       eventLoopLagMs: Math.round(this.lastLag), openSockets: extra.openSockets || 0, activeRooms: extra.activeRooms || 0,
       activePlayers: extra.activePlayers || 0, publicQueue: extra.publicQueue || 0, pendingWrites: this.pending,
       droppedEvents: this.dropped, eventStoreBytes: size, errorsSinceStart: this.counts.error || 0, counts: { ...this.counts } };
+  }
+  // Daily retention job (Node interval / Durable Object alarm): delete at most `limit` analytics rows older than 183 days. Returns count deleted.
+  cleanup(now = Date.now(), limit = 500) {
+    if (!this.store) return 0;
+    try { return this.store.pruneEvents(now - RETENTION_DAYS * DAY, limit); } catch (err) { this.log('analytics cleanup failed', err.message); return 0; }
   }
   records() {
     if (!this.enabled) return [];
@@ -120,4 +126,4 @@ function audienceSummary(recs, now) {
 }
 function dist(a) { const out = {}; for (const n of a) out[n] = (out[n] || 0) + 1; return out; }
 function anonId(value) { return /^[a-f0-9]{32}$/i.test(value || '') ? value.toLowerCase() : crypto.randomBytes(16).toString('hex'); }
-module.exports = { Analytics, anonId, clean };
+module.exports = { Analytics, anonId, clean, RETENTION_DAYS };
