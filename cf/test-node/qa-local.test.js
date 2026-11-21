@@ -82,3 +82,16 @@ test('bundle: Worker bundle has no Node HTTP server, custom ws framing or real n
   assert.match(src, /node:sqlite is not available in Workers/); // only the stub
   assert.ok(Buffer.byteLength(src) < 3 * 1024 * 1024, 'under the 3 MB free-plan script limit');
 });
+
+test('tools/import-to-cf.js seeds the local Worker from a legacy dir (synthetic) and verification passes', async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs'); const { gzipSync } = await import('node:zlib');
+  const d = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'legacy-'));
+  writeFileSync(join(d, 'history.jsonl'), [1, 2, 3].map((n) => JSON.stringify({ k: 'r', seq: n, tid: 'cat', g: 'g' + n, out: 'ok' })).join('\n') + '\n');
+  writeFileSync(join(d, 'analytics.jsonl'), [1, 2].map((n) => JSON.stringify({ v: 1, at: Date.now() - n, type: 'landing', synthetic: true })).join('\n') + '\n');
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ v: 1, tiers: { cat: 'hard' }, since: {}, audit: [{ at: 1, id: 'cat' }] }));
+  mkdirSync(join(d, 'archive')); writeFileSync(join(d, 'archive', 'deadbeef.json.gz'), gzipSync(JSON.stringify({ savedAt: '2026-11-01T00:00:00.000Z', best: {} })));
+  const r = spawnSync('node', [join(root, 'tools/import-to-cf.js'), d], { env: { ...env, BASE_URL: BASE, ADMIN_TOKEN: TOKEN }, encoding: 'utf8', timeout: 120000 });
+  const rep = JSON.parse(r.stdout);
+  assert.deepEqual(rep.problems, []); assert.equal(r.status, 0);
+  assert.deepEqual(rep.imported, { drawings: 3, tiers: 1, audit: 1, events: 2, archive: 1 });
+});

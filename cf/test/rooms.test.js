@@ -180,3 +180,16 @@ test('Directory alarm deletes analytics older than 183 days only, keeps history/
   expect(after.old).toBe(0); expect(after.drawing).toBe(true);
   expect(after.alarm).toBeGreaterThan(Date.now() + 20 * 3600000);
 });
+
+test('dev import endpoint: token required, loads drawings/tiers/audit/events/archive chunks, export reflects them', async () => {
+  const body = { drawings: [[7001, { tid: 'cat', g: 'gimp', out: 'ok' }], [7002, { tid: 'dog', g: 'gimp', out: 'abandoned' }]],
+    tiers: [['cat', 'hard', 7001]], audit: [{ at: 5, id: 'cat' }], events: [JSON.stringify({ at: 123456, type: 'landing', v: 1 })],
+    archive: [{ id: 'abcdef01', savedAt: '2026-11-01T00:00:00.000Z', b64: Buffer.from('gz').toString('base64'), sha: 'h' }] };
+  const post = (h) => get('/admin/import', { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: JSON.stringify(body) });
+  expect((await post({})).status).toBe(401);
+  expect((await get('/admin/import', { headers: bearer })).status).toBe(405);
+  const r = await post(bearer); expect(r.status).toBe(200);
+  expect(await r.json()).toEqual({ drawings: 2, tiers: 1, audit: 1, events: 1, archive: 1 });
+  const d = await inDir(async (inst) => ({ n: inst.store.drawingCount(), tiers: inst.store.loadTiers().tiers, ev: inst.store.eventLines().includes(body.events[0]), arc: inst.store.archiveHas('abcdef01'), seq: inst.history.seq }));
+  expect(d.n).toBeGreaterThanOrEqual(2); expect(d.tiers.cat).toBe('hard'); expect(d.ev).toBe(true); expect(d.arc).toBe(true);
+});
