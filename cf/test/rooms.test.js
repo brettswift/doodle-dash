@@ -393,3 +393,34 @@ test('production-mode Directory refuses /admin/import', async () => {
   const code = await inDir(async (i) => { i.qa = false; const r = await i.fetch(new Request('https://crayon.test/admin/import', { method: 'POST', headers: bearer, body: '{}' })); return r.status; });
   expect(code).toBe(404);
 });
+
+test('Room retries a failed local outbox write before delivery, never sends an unpersisted batch, and ingests once after restore', async () => {
+  const a = await client(), b = await client();
+  const code = await twoPlayerRoom(a, b);
+  const gid = 'localfail' + Math.random().toString(16).slice(2, 8);
+  const result = await inRoom(code, async (inst) => {
+    inst.schedule = async () => {};
+    let attempts = 0, durableAtSend = [];
+    inst.dirStub = () => ({ ingest: async () => { attempts++; durableAtSend.push(inst.store.keys('ob:').length); throw new Error('injected Directory outage'); } });
+    const original = inst.store.set;
+    inst.store.set = function (key, value) {
+      if (key.startsWith('ob:')) throw new Error('injected transient local SQL failure');
+      return original.call(this, key, value);
+    };
+    inst.outbox.addDrawing({ tid: 'cat', g: gid, out: 'ok' });
+    await inst.flush();
+    const first = { durable: inst.store.keys('ob:').length, queued: inst.outbox.queue.length, attempts };
+    inst.store.set = original;
+    await inst.flush();
+    const retry = { durable: inst.store.keys('ob:').length, queued: inst.outbox.queue.length, attempts, durableAtSend };
+    inst.evictForTest();
+    return { first, retry, afterRestore: inst.outbox.queue.length, durableAfter: inst.store.keys('ob:').length };
+  });
+  // no Directory call while the batch was not durable; after local recovery it is persisted before the (failing) send
+  expect(result.first).toEqual({ durable: 0, queued: 1, attempts: 0 });
+  expect(result.retry.durable).toBe(1);
+  expect(result.retry.durableAtSend.length).toBeGreaterThan(0); expect(result.retry.durableAtSend.every((d) => d === 1)).toBe(true);
+  expect(result.afterRestore).toBe(1);
+  expect(result.durableAfter).toBe(1);
+  await inRoom(code, async (inst) => { delete inst.dirStub; await inst.flush(); expect(inst.outbox.queue.length).toBe(0); expect(inst.store.keys('ob:').length).toBe(0); });
+});
