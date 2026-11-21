@@ -37,7 +37,7 @@ export class Room extends DurableObject {
 
   build() {
     this.code = this.store.get('code');
-    this.fingerprint = null; this.live = false;
+    this.fingerprint = null; this.live = false; this.persisted = new WeakSet();
     this.outbox = new Outbox();
     const analytics = new Analytics({ store: this.outbox.eventStore, enabled: true, qa: this.qa, log: this.log });
     // The Directory already recorded the visit ('landing'); the Room-side socket must not count it again.
@@ -68,7 +68,7 @@ export class Room extends DurableObject {
       try { this.game.restore(this.code, JSON.parse(snap), now); this.live = true; } catch (e) { this.log('room restore failed', this.code, e.message); this.store.del('snap'); }
     }
     const pend = this.store.get('pend'); if (pend) this.pending = JSON.parse(pend);
-    for (const k of this.store.keys('ob:')) { try { this.outbox.queue.push(JSON.parse(this.store.get(k))); } catch { this.store.del(k); } }
+    for (const k of this.store.keys('ob:')) { try { const b = JSON.parse(this.store.get(k)); this.outbox.queue.push(b); this.persisted.add(b); } catch { this.store.del(k); } }
     this.log('room start:', this.code || '(none)', this.live ? 'restored' : 'empty', this.ctx.getWebSockets().length, 'socket(s)', this.outbox.queue.length, 'queued batch(es)');
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() || {};
@@ -173,9 +173,17 @@ export class Room extends DurableObject {
     const sel = {};
     for (const k of Object.keys(this.selSent)) { const d = this.topics.stats[k] - this.selSent[k]; if (d) { sel[k] = d; this.selSent[k] = this.topics.stats[k]; } }
     const b = this.outbox.seal({ src: this.code, sel });
-    // Durable before the first delivery attempt, so an eviction during an outstanding RPC cannot lose completed results.
-    try { this.store.set(this.obKey(b), JSON.stringify(b)); } catch (e) { this.log('outbox persist failed', e.message); }
     return b;
+  }
+  // Durable before any delivery attempt, so an eviction during an outstanding RPC cannot lose completed results.
+  // Returns false (batch stays queued, nothing is sent) when local storage rejects the write; flush retries it.
+  persistQueued() {
+    for (const b of this.outbox.queue) {
+      if (this.persisted.has(b)) continue;
+      try { this.store.set(this.obKey(b), JSON.stringify(b)); this.persisted.add(b); }
+      catch (e) { this.log('outbox persist failed, will retry:', e.message); return false; }
+    }
+    return true;
   }
   obKey(b) { return 'ob:' + String(b.n).padStart(20, '0'); }
   // Deliver queued batches in order. A failed batch stays queued (and persisted, so eviction cannot lose it); an alarm retries it.
@@ -186,6 +194,7 @@ export class Room extends DurableObject {
         do {
           this.again = false; this.sealBatch();
           while (this.outbox.queue.length) {
+            if (!this.persistQueued()) { this.retryN++; await this.schedule(); return; }
             const b = this.outbox.queue[0];
             let res;
             try { res = await this.dirStub().ingest(b.src || 'orphan', b); }
