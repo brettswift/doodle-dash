@@ -55,12 +55,25 @@ export class Directory extends DurableObject {
     });
   }
   restore() {
+    void this.armRetention();
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() || {};
       const entry = this.makeEntry(ws, att);
       this.sessions.set(ws, entry);
       if (att.q) entry.requeue(att.q);
     }
+  }
+  // Daily analytics retention (183 days) as a Durable Object alarm: small batches, no recurring timer, re-armed after each run.
+  async armRetention(afterMs = 86400000) {
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null) await this.ctx.storage.setAlarm(Date.now() + afterMs);
+  }
+  async alarm() {
+    let more = false;
+    try {
+      for (let i = 0; i < 20; i++) { if (this.analytics.cleanup(Date.now(), 500) < 500) break; if (i === 19) more = true; }
+    } catch (e) { this.log('retention alarm failed', e.message); }
+    await this.ctx.storage.setAlarm(Date.now() + (more ? 60000 : 86400000));
   }
   evictForTest() { this.mm.close(); this.build(); this.restore(); }
 

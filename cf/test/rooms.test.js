@@ -163,3 +163,20 @@ test('a full 2-player game writes well under 100 SQL rows across Room and Direct
   const arch = await (await get('/admin/drawings.json', { headers: bearer })).json();
   expect(arch.stats.files).toBeGreaterThanOrEqual(1); // best/worst archive written by the Directory
 }, 30000);
+
+test('Directory alarm deletes analytics older than 183 days only, keeps history/tiers/archive, and re-arms daily', async () => {
+  const DAY = 86400000;
+  await inDir(async (inst, state) => {
+    const st = inst.store;
+    for (let i = 0; i < 3; i++) st.addEvent({ at: Date.now() - 200 * DAY - i, type: 'landing' });
+    st.addEvent({ at: Date.now() - 10 * DAY, type: 'landing' });
+    st.putDrawing(990001, { tid: 'cat', g: 'g', out: 'ok' });
+  });
+  const stub = DIR();
+  const { runDurableObjectAlarm } = await import('cloudflare:test');
+  await inDir(async (inst, state) => { await state.storage.setAlarm(Date.now() + 10); });
+  expect(await runDurableObjectAlarm(stub)).toBe(true);
+  const after = await inDir(async (inst, state) => ({ old: inst.store.eventLines().map((l) => JSON.parse(l)).filter((e) => e.at < Date.now() - 183 * DAY).length, drawing: inst.store.drawingCount() > 0, alarm: await state.storage.getAlarm() }));
+  expect(after.old).toBe(0); expect(after.drawing).toBe(true);
+  expect(after.alarm).toBeGreaterThan(Date.now() + 20 * 3600000);
+});
