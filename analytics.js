@@ -3,6 +3,10 @@
 const crypto = require('node:crypto');
 const { openStore } = require('./store');
 
+// Process metrics are optional: Cloudflare Workers has no cpuUsage/memoryUsage, so those fields are null there (unavailable, not zero).
+const hr = () => { try { return process.hrtime.bigint(); } catch { return BigInt(Date.now()) * 1000000n; } };
+const cpuUse = () => { try { return process.cpuUsage(); } catch { return null; } };
+const memUse = () => { try { return process.memoryUsage(); } catch { return {}; } };
 const MAX_BYTES = 8 * 1024 * 1024;
 const DAY = 86400000;
 const allowed = new Set(['landing', 'nameEntered', 'intent', 'queueEntered', 'queueLeft', 'queueTimeout', 'lobbyFormed', 'gameStarted', 'gameEnded', 'gameAbandoned', 'privateLobbyCreated', 'privateLobbyClosed', 'connect', 'reconnect', 'error', 'operation']);
@@ -12,11 +16,11 @@ class Analytics {
   constructor({ dir, store = null, log = () => {}, enabled = true, qa = false } = {}) {
     this.dir = dir; this.log = log; this.qa = !!qa; this.pending = 0; this.dropped = 0; this.writing = false; this.queue = []; this.started = Date.now();
     this.store = enabled ? (store || (dir ? openStore(dir, { log }) : null)) : null; this.enabled = !!this.store;
-    this.counts = Object.create(null); this.lastLag = 0; this.lastTick = process.hrtime.bigint();
-    this.runId = crypto.randomBytes(8).toString('hex'); this.cpu = process.cpuUsage(); this.cpuAt = process.hrtime.bigint();
+    this.counts = Object.create(null); this.lastLag = 0; this.lastTick = hr();
+    this.runId = crypto.randomBytes(8).toString('hex'); this.cpu = cpuUse(); this.cpuAt = hr();
     this.cpuPercent = null;
   }
-  tick() { const now = process.hrtime.bigint(); const elapsed = Number(now - this.lastTick) / 1e6; this.lastLag = Math.max(0, elapsed - 250); this.lastTick = now; }
+  tick() { const now = hr(); const elapsed = Number(now - this.lastTick) / 1e6; this.lastLag = Math.max(0, elapsed - 250); this.lastTick = now; }
   event(type, props = {}) {
     if (!this.enabled || !allowed.has(type)) return;
     const e = { ...props, v: 1, at: Date.now(), type, qa: this.qa || undefined, runId: this.runId };
@@ -24,8 +28,8 @@ class Analytics {
     catch (err) { this.dropped++; this.log('analytics write failed', err.message); }
   }
   sample(extra = {}) {
-    const now = process.hrtime.bigint(), cpu = process.cpuUsage();
-    this.cpuPercent = Math.round((cpu.user - this.cpu.user + cpu.system - this.cpu.system) / (Number(now - this.cpuAt) / 1000) * 1000) / 10;
+    const now = hr(), cpu = cpuUse();
+    if (cpu && this.cpu) this.cpuPercent = Math.round((cpu.user - this.cpu.user + cpu.system - this.cpu.system) / (Number(now - this.cpuAt) / 1000) * 1000) / 10;
     this.cpu = cpu; this.cpuAt = now;
     this.event('operation', this.health(extra));
   }
@@ -35,10 +39,10 @@ class Analytics {
       limitation: 'Process samples only while Fly machine runs. Missing intervals, host metrics, and pre-release history are unavailable, not zero.' };
   }
   health(extra = {}) {
-    const mem = process.memoryUsage(); let size = 0;
+    const mem = memUse(); let size = 0;
     try { if (this.store) size = this.store.eventBytes(); } catch {}
     return { ...extra, analyticsEnabled: this.enabled, qa: this.qa, cpuPercent: this.cpuPercent, hostCpuPercent: null, hostMemoryBytes: null,
-      uptimeMs: Date.now() - this.started, rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal,
+      uptimeMs: Date.now() - this.started, rss: mem.rss || null, heapUsed: mem.heapUsed || null, heapTotal: mem.heapTotal || null,
       eventLoopLagMs: Math.round(this.lastLag), openSockets: extra.openSockets || 0, activeRooms: extra.activeRooms || 0,
       activePlayers: extra.activePlayers || 0, publicQueue: extra.publicQueue || 0, pendingWrites: this.pending,
       droppedEvents: this.dropped, eventStoreBytes: size, errorsSinceStart: this.counts.error || 0, counts: { ...this.counts } };

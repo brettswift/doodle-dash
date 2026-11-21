@@ -1,0 +1,16 @@
+{
+  "name": "crayon-breath-cf",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test": "vitest run && node --test test-node/*.test.js",
+    "dry": "wrangler deploy --dry-run --outdir dist",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.166.0"
+  },
+  "type": "module"
+}

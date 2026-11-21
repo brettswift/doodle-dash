@@ -1,0 +1,28 @@
+# Crayon Breath on Cloudflare (free plan): one Worker + one SQLite-backed Durable Object ("hub") + static assets.
+# Local only until step 6. The deployed dev name is crayon-breath-dev; production name/routes are NOT defined here.
+name = "crayon-breath-dev"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]
+
+[assets]
+directory = "../public"
+html_handling = "none"
+binding = "ASSETS"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "GameHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameHub"]
+
+# The shared game code never reaches node:sqlite on this runtime; the Node-only store module is aliased to a stub.
+[alias]
+"node:sqlite" = "./src/empty-sqlite.js"
+
+# Dev defaults: APP_ENV=qa disables ntfy and tags analytics.
+[vars]
+APP_ENV = "qa"
