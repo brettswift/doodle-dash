@@ -1,0 +1,47 @@
+# Ephemeral QA app for Crayon Breath migration testing. Never production: no ntfy, short game timers, own volume.
+# Created and destroyed per step; see docs/fly-deploy.md.
+app = "crayon-breath-dev"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DATA_DIR = "/data"
+  APP_ENV = "qa"
+  CHOOSE_MS = "1500"
+  DRAW_MS = "6000"
+  RESULT_MS = "600"
+  GRACE_MS = "1500"
+  LOBBY_FIRST_MS = "1500"
+  LOBBY_RESET_MS = "800"
+
+[mounts]
+  source = "crayon_dev_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[metadata]
+  project = "doodle-dash"
+  environment = "qa-dev"
+  owner = "brett"
+  managed_by = "hermes"
