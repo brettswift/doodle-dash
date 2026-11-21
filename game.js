@@ -3,6 +3,7 @@
 // wall clock, live send callbacks and the services (history, topics, archive, analytics). Game rules live in core.js.
 const crypto = require('node:crypto');
 const core = require('./core');
+const { openStore } = require('./store');
 const { History } = require('./history');
 const { Topics } = require('./topics');
 const { Archive } = require('./archive');
@@ -11,8 +12,9 @@ const { NAME_RE, MAX_PLAYERS, DEFAULT_ROTATIONS, MIN_ROTATIONS, MAX_ROTATIONS, s
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const rng = { hex: (bytes) => crypto.randomBytes(bytes).toString('hex'), int: (max) => crypto.randomInt(max) };
 const makeCtx = (opts = {}) => {
-  const history = new History({ dir: opts.dataDir || null, log: opts.log });
-  return { history, topics: new Topics(history), adapt, analytics: opts.analytics, archive: new Archive({ dir: opts.dataDir || null, log: opts.log, ...opts.archive }) };
+  const store = opts.store || openStore(opts.dataDir || null, { log: opts.log });
+  const history = new History({ store, log: opts.log });
+  return { store, history, topics: new Topics(history), adapt, analytics: opts.analytics, archive: new Archive({ store, log: opts.log, ...opts.archive }) };
 };
 const envConfig = () => ({
   choose: +process.env.CHOOSE_MS || 15000,
@@ -79,7 +81,7 @@ for (const k of STATE_KEYS) {
 class Game {
   constructor(opts = {}) { this.rooms = new Map(); this.ctx = { ...makeCtx(opts), onGameStart: opts.onGameStart }; }
   // graceful stop: close in-flight drawings as abandoned and persist state
-  shutdown(now = Date.now()) { for (const r of this.rooms.values()) r.abort(now); this.ctx.history.close(); }
+  shutdown(now = Date.now()) { for (const r of this.rooms.values()) r.abort(now); this.ctx.history.close(); }  // store is closed by its owner (server) after shutdown
   create(now) {
     if (this.rooms.size >= 100) return null;
     let code;

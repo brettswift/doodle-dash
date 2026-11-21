@@ -7,6 +7,7 @@ const { Game, NAME_RE } = require('./game');
 const { TOPICS } = require('./words');
 const { Matchmaker } = require('./lobby');
 const { Analytics, anonId, clean } = require('./analytics');
+const { openStore } = require('./store');
 const { authorized, adminPage } = require('./admin');
 const { makeNotifier } = require('./notifier');
 const PUBLIC_ROUNDS = 3; // quick game: 3 rounds, each round every player draws once
@@ -77,9 +78,10 @@ function start(port, opts = {}) {
   const qa = opts.qa ?? (process.env.NODE_ENV === 'test' || process.env.APP_ENV === 'qa' || (!process.env.FLY_APP_NAME && process.env.APP_ENV !== 'production'));
   const pub = {};
   for (const [url, [f, type]] of Object.entries(FILES)) pub[url] = { body: fs.readFileSync(path.join(__dirname, 'public', f)), type };
-  const analytics = new Analytics({ dir: opts.dataDir ?? process.env.DATA_DIR, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
+  const dataDir = opts.dataDir ?? process.env.DATA_DIR, store = openStore(dataDir, { log: (...a) => console.error('[doodle]', ...a) });
+  const analytics = new Analytics({ store, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
   const notifier = makeNotifier({ baseUrl: opts.ntfyBaseUrl ?? process.env.NTFY_BASE_URL, topic: opts.ntfyTopic ?? process.env.NTFY_TOPIC ?? 'crayon_breath', fetchImpl: opts.fetchImpl, enabled: !qa && (opts.alertsEnabled ?? process.env.NTFY_ALERTS_ENABLED === 'true'), log: (...a) => console.error('[doodle]', ...a) });
-  const game = new Game({ dataDir: opts.dataDir ?? process.env.DATA_DIR, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
+  const game = new Game({ store, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
   const maxPerIp = opts.maxPerIp ?? MAX_PER_IP;
   const maxSockets = opts.maxSockets ?? (+process.env.MAX_SOCKETS || MAX_SOCKETS);
@@ -112,7 +114,7 @@ function start(port, opts = {}) {
   const socks = new Set();
 
   const exportToken = Object.hasOwn(opts, 'exportToken') ? opts.exportToken : process.env.DOODLE_EXPORT_TOKEN;
-  const exportHandler = makeExportHandler({ dir: opts.dataDir ?? process.env.DATA_DIR, token: exportToken });
+  const exportHandler = makeExportHandler({ store, token: exportToken });
   const server = http.createServer((req, res) => {
     if (exportHandler(req, res)) return;
     const url = (req.url || '').split('?')[0];
@@ -265,7 +267,7 @@ function start(port, opts = {}) {
   return new Promise((resolve) => {
     server.listen(port, () => resolve({
       port: server.address().port, game, mm, analytics,
-      close: () => { clearInterval(timer); clearInterval(sampleTimer); mm.close(); game.shutdown(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
+      close: () => { clearInterval(timer); clearInterval(sampleTimer); mm.close(); game.shutdown(); store?.close(); server.close(); server.closeAllConnections?.(); for (const s of socks) s.destroy(); },
     }));
   });
 }
