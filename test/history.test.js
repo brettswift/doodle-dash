@@ -257,3 +257,23 @@ test('e2e: real drawing persists across restart, /stats is aggregate-only, no ad
   for (let i = 0; i < 300; i++) for (const c of srv.game.ctx.topics.offer('Z')) assert.notEqual(c.id, rec.tid);
   srv.close();
 });
+
+test('History.record stores a finished drawing in one write with the next sequence number', () => {
+  const rows = [];
+  const store = { loadDrawings: () => [], maxSeq: () => 0, loadTiers: () => ({ tiers: {}, since: {} }), loadAudit: () => [], putDrawing: (seq, rec) => rows.push([seq, rec]) };
+  const h = new History({ store });
+  const a = h.record({ tid: 'cat', d: 'easy', g: 'g1', out: 'timeup', ok: 1 });
+  const b = h.record({ tid: 'dog', d: 'easy', g: 'g1', out: 'all', ok: 2 });
+  assert.deepEqual([a, b], [1, 2]);
+  assert.equal(rows.length, 2); // one write each, not start + end
+  assert.equal(rows[0][1].out, 'timeup');
+  assert.equal(h.last.get('dog'), 2);
+});
+
+test('Game.open creates a room under an external code without the room cap (Cloudflare Room objects)', () => {
+  const g = new Game();
+  for (let i = 0; i < 100; i++) g.create(Date.now());
+  assert.equal(g.create(Date.now()), null); // Node host: 100-room cap unchanged
+  const r = g.open('ABCD', Date.now());
+  assert.equal(r.code, 'ABCD'); assert.equal(g.get('abcd'), r);
+});

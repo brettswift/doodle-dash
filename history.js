@@ -42,6 +42,14 @@ class History {
     this.write('history', (s) => s.putDrawing(seq, this.rowOf(r)));
     return seq;
   }
+  // Store one finished drawing in a single write (used when the drawing ran in another object and only the result arrives).
+  record(rec) {
+    const seq = ++this.seq, r = { seq, out: 'abandoned', ...rec };
+    this.recs.set(seq, r); this.last.set(rec.tid, seq);
+    this.write('history', (s) => s.putDrawing(seq, this.rowOf(r)));
+    this.trim();
+    return seq;
+  }
   end(seq, f) {
     const r = this.recs.get(seq); if (!r) return;
     Object.assign(r, f); this.write('history', (s) => s.putDrawing(seq, this.rowOf(r)));

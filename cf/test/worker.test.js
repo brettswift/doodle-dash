@@ -1,30 +1,8 @@
-import { SELF, env, runInDurableObject } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { test, expect } from 'vitest';
 import { gunzipSync } from 'node:zlib';
 import { toHub } from '../src/worker.js';
-
-const BASE = 'https://crayon.test';
-const TOKEN = 'test-admin-token';
-const bearer = { authorization: 'Bearer ' + TOKEN };
-const get = (p, init) => SELF.fetch(BASE + p, init);
-
-// ---------- minimal WebSocket test client ----------
-async function client(headers = {}) {
-  const res = await SELF.fetch(BASE + '/ws', { headers: { Upgrade: 'websocket', Origin: BASE, ...headers } });
-  if (res.status !== 101) return { status: res.status };
-  const ws = res.webSocket; ws.accept();
-  const c = { status: 101, ws, msgs: [], closed: null, waiters: [] };
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); c.msgs.push(m); c.waiters = c.waiters.filter((w) => !w(m)); });
-  ws.addEventListener('close', (e) => { c.closed = e.code; c.waiters = c.waiters.filter((w) => !w(null)); });
-  c.send = (o) => ws.send(JSON.stringify(o));
-  c.wait = (pred, ms = 4000) => new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('timeout; saw ' + JSON.stringify(c.msgs.slice(-3)))), ms);
-    const hit = (m) => { if (m && pred(m)) { clearTimeout(t); resolve(m); return true; } return false; };
-    for (const m of c.msgs) if (hit(m)) return;
-    c.waiters.push(hit);
-  });
-  return c;
-}
+import { BASE, bearer, get, client, stubOf, sleep } from './helpers.js';
 
 test('healthz and version', async () => {
   expect(await (await get('/healthz')).text()).toBe('ok');
@@ -131,10 +109,10 @@ test('websocket: picking a word starts a drawing (history row), snapshots the ro
   expect(drawer[1].choices.length).toBe(3);
   drawer[0].send({ t: 'pick', i: 0 });
   await drawer[0].wait((m) => m.t === 'state' && m.phase === 'drawing');
-  const stub = env.HUB.get(env.HUB.idFromName('hub'));
-  const n = await runInDurableObject(stub, async (inst) => ({ drawings: inst.store.drawingCount(), codes: inst.store.loadRooms().map((r) => r.code),
-    types: inst.store.eventLines().map((l) => JSON.parse(l).type) }));
-  expect(n.drawings).toBe(1); expect(n.codes).toContain(j.code);
+  await sleep(300); // the Room hands its history/analytics batch to the Directory asynchronously
+  const room = await runInDurableObject(stubOf(env.ROOM, j.code), async (inst) => ({ snap: inst.store.get('snap') }));
+  expect(room.snap).toContain(j.code);
+  const n = await runInDurableObject(stubOf(env.DIRECTORY, 'dir'), async (inst) => ({ types: inst.store.eventLines().map((l) => JSON.parse(l).type) }));
   expect(n.types).toEqual(expect.arrayContaining(['privateLobbyCreated', 'nameEntered', 'gameStarted']));
 });
 
@@ -145,8 +123,7 @@ test('eviction: a rebuilt hub restores the room from its snapshot and re-binds t
   b.send({ t: 'join', code: j.code, name: 'Bob' });
   await b.wait((m) => m.t === 'joined');
   await a.wait((m) => m.t === 'state' && m.players.length === 2);
-  const stub = env.HUB.get(env.HUB.idFromName('hub'));
-  await runInDurableObject(stub, async (inst) => { inst.evictForTest(); });
+  await runInDurableObject(stubOf(env.ROOM, j.code), async (inst) => { inst.evictForTest(); });
   const before = a.msgs.length;
   a.send({ t: 'rounds', n: 2 }); // host command works on the restored room
   const st = await a.wait((m) => m.t === 'state' && m.rotations === 2 && a.msgs.indexOf(m) >= before);
@@ -156,16 +133,16 @@ test('eviction: a rebuilt hub restores the room from its snapshot and re-binds t
   await b.wait((m) => m.t === 'state' && m.rotations === 2);
 });
 
-test('hub never stores a raw IP: attachments hold a keyed digest only', async () => {
+test('no raw IP is stored anywhere: Room and Directory attachments, snapshots and events hold a keyed digest only', async () => {
   const a = await client({ 'cf-connecting-ip': '8.8.4.4' });
+  a.send({ t: 'analytics', browserId: 'b', sessionId: 's', timezone: 'UTC', language: 'en' });
   a.send({ t: 'create', name: 'Ann' });
-  await a.wait((m) => m.t === 'joined');
-  const stub = env.HUB.get(env.HUB.idFromName('hub'));
-  const dump = await runInDurableObject(stub, async (inst, state) => {
-    const atts = state.getWebSockets().map((w) => JSON.stringify(w.deserializeAttachment()));
-    const rows = state.storage.sql.exec('SELECT json FROM analytics_events').toArray().map((r) => r.json).join('') + inst.store.loadRooms().map((r) => r.snap).join('');
-    return { atts, rows };
-  });
-  expect(dump.atts.join('')).not.toContain('8.8.4.4');
-  expect(dump.rows).not.toContain('8.8.4.4');
+  const j = await a.wait((m) => m.t === 'joined');
+  await sleep(300);
+  const room = await runInDurableObject(stubOf(env.ROOM, j.code), async (inst, state) => ({
+    atts: state.getWebSockets().map((w) => JSON.stringify(w.deserializeAttachment())).join(''),
+    rows: state.storage.sql.exec('SELECT v FROM kv').toArray().map((r) => r.v).join('') }));
+  const dir = await runInDurableObject(stubOf(env.DIRECTORY, 'dir'), async (inst, state) => ({
+    rows: state.storage.sql.exec('SELECT json FROM analytics_events').toArray().map((r) => r.json).join('') }));
+  expect(room.atts + room.rows + dir.rows).not.toContain('8.8.4.4');
 });

@@ -38,18 +38,37 @@ test('QA game client passes 24/24 checks against the local Cloudflare Worker', (
   assert.equal(r.status, 0);
 });
 
-test('hibernation: after idle the object is rebuilt from snapshots and live sockets keep their seats', async () => {
-  const open = () => new Promise((res) => { const w = new WebSocket(`ws://localhost:${PORT}/ws`); const msgs = []; w.onmessage = (e) => msgs.push(JSON.parse(e.data)); w.onopen = () => res({ w, msgs }); });
+test('two QA games run concurrently on one Worker, each in its own Room objects, both pass', async () => {
+  const run = (extra) => new Promise((resolve) => {
+    let out = ''; const p = spawn('node', [join(root, 'tools/qa-game.js')], { env: { ...env, BASE_URL: BASE, ADMIN_TOKEN: TOKEN, ...extra } });
+    p.stdout.on('data', (d) => { out += d; }); p.on('close', (code) => resolve({ code, out }));
+  });
+  // the public queue is one global queue, so only one of the two runs exercises it
+  const [a, b] = await Promise.all([run({}), run({ QA_SKIP: 'public' })]);
+  for (const r of [a, b]) { const rep = JSON.parse(r.out); assert.deepEqual(rep.checks.filter((c) => !c.ok), []); assert.equal(r.code, 0); }
+  assert.equal(JSON.parse(a.out).checks.length, 24); assert.equal(JSON.parse(b.out).checks.length, 22);
+  const h = (await (await fetch(BASE + '/admin/analytics.json', { headers: { authorization: 'Bearer ' + TOKEN } })).json()).health;
+  console.log('storage after 3 QA games (Directory + all Rooms):', JSON.stringify(h.storage), 'registered rooms', h.registeredRooms);
+  assert.ok(h.storage.rowsWritten > 0);
+});
+
+test('hibernation: after idle the Room object is rebuilt from its snapshot and live sockets keep their seats', async () => {
+  // entry socket + goto, like the browser
+  const open = () => new Promise((res) => {
+    const c = { msgs: [] };
+    const attach = (w) => { c.w = w; w.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'goto') { w.onclose = null; w.close(); const n = new WebSocket(`ws://localhost:${PORT}/ws?room=${m.code}`); n.onopen = () => n.send(JSON.stringify(m.msg)); attach(n); return; } c.msgs.push(m); }; };
+    const w = new WebSocket(`ws://localhost:${PORT}/ws`); attach(w); w.onopen = () => res(c);
+  });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const a = await open(), b = await open();
   a.w.send(JSON.stringify({ t: 'create', name: 'Ann' })); await sleep(400);
   const code = a.msgs.find((m) => m.t === 'joined').code;
   b.w.send(JSON.stringify({ t: 'join', code, name: 'Bob' })); await sleep(400);
-  const starts = () => (log.match(/hub start: restoring/g) || []).length, before = starts();
+  const starts = () => (log.match(/room start: [A-Z]{4} restored/g) || []).length, before = starts();
   await sleep(25000); // idle lobby: no timers, so workerd hibernates the object
   a.w.send(JSON.stringify({ t: 'rounds', n: 2 })); await sleep(800);
   assert.ok(starts() > before, 'object was evicted and rebuilt');
-  assert.match(log, /restoring \d+ room snapshot\(s\), 2 socket\(s\)/);
+  assert.match(log, /room start: [A-Z]{4} restored 2 socket\(s\)/);
   for (const c of [a, b]) assert.equal(c.msgs.filter((m) => m.t === 'state').pop().rotations, 2);
   a.w.close(); b.w.close();
 });

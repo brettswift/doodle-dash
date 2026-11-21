@@ -4,13 +4,15 @@
 import schema from '../../schema.js';
 
 const { SCHEMA_VERSION, DDL } = schema;
-const ROOMS_DDL = 'CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, snap TEXT NOT NULL, at INTEGER NOT NULL) WITHOUT ROWID;';
+// Directory-only tables: last applied batch number per Room (idempotent ingest) and the registry of live room codes.
+const DIRECTORY_DDL = `CREATE TABLE IF NOT EXISTS ingest (src TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS room_codes (code TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;`;
 
 export class DoStore {
   constructor(storage, log = () => {}) {
     this.storage = storage; this.sql = storage.sql; this.log = log;
     this.rowsWritten = 0; this.rowsRead = 0; // meter for the free-plan daily budgets
-    this.sql.exec(DDL); this.sql.exec(ROOMS_DDL);
+    this.sql.exec(DDL);
     if (this.getMeta('schema') === null) this.setMeta('schema', String(SCHEMA_VERSION));
     else if (+this.getMeta('schema') > SCHEMA_VERSION) throw new Error('database schema is newer than this build');
   }
@@ -63,10 +65,28 @@ export class DoStore {
   archiveGet(id) { const r = this.run('SELECT data FROM archive WHERE game_id=?', id); return r.length ? Buffer.from(r[0].data) : null; }
   archiveSha(id) { const r = this.run('SELECT sha256 FROM archive WHERE game_id=?', id); return r.length ? r[0].sha256 : null; }
 
-  // ----- live room snapshots (transient: lets a hibernated/evicted hub rebuild rooms whose sockets are still connected) -----
-  putRoom(code, snap, at) { this.run('INSERT INTO rooms(code,snap,at) VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET snap=excluded.snap, at=excluded.at', code, snap, at); }
-  delRoom(code) { this.run('DELETE FROM rooms WHERE code=?', code); }
-  loadRooms() { return this.run('SELECT code, snap FROM rooms'); }
-
   close() {}
+}
+
+// The Directory's store: the shared history/analytics/archive store plus ingest markers and the room-code registry.
+export class DirectoryStore extends DoStore {
+  constructor(storage, log) { super(storage, log); this.sql.exec(DIRECTORY_DDL); }
+  lastIngest(src) { const r = this.run('SELECT n FROM ingest WHERE src=?', src); return r.length ? r[0].n : null; }
+  setIngest(src, n) { this.run('INSERT INTO ingest(src,n) VALUES (?,?) ON CONFLICT(src) DO UPDATE SET n=excluded.n', src, n); }
+  addCode(code, at) { this.run('INSERT OR REPLACE INTO room_codes(code,at) VALUES (?,?)', code, at); }
+  delCode(code) { this.run('DELETE FROM room_codes WHERE code=?', code); }
+  loadCodes() { return this.run('SELECT code FROM room_codes').map((r) => r.code); }
+}
+
+// A Room's tiny private store: key/value rows (live room snapshot, code, public-start marker, undelivered Directory batches).
+export class RoomStore {
+  constructor(storage) {
+    this.storage = storage; this.sql = storage.sql; this.rowsWritten = 0; this.rowsRead = 0;
+    this.sql.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;');
+  }
+  run(query, ...args) { const c = this.sql.exec(query, ...args); const rows = c.toArray(); this.rowsWritten += c.rowsWritten; this.rowsRead += c.rowsRead; return rows; }
+  get(k) { const r = this.run('SELECT v FROM kv WHERE k=?', k); return r.length ? r[0].v : null; }
+  set(k, v) { this.run('INSERT INTO kv(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', k, String(v)); }
+  del(k) { this.run('DELETE FROM kv WHERE k=?', k); }
+  keys(prefix) { return this.run('SELECT k FROM kv WHERE k>=? AND k<? ORDER BY k', prefix, prefix + '\uffff').map((r) => r.k); }
 }
