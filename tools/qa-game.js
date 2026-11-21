@@ -11,17 +11,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Client {
   constructor(baseUrl, label, timeoutMs) {
-    this.label = label; this.timeoutMs = timeoutMs; this.msgs = []; this.state = null; this.joined = null; this.closed = false; this.waiters = [];
-    this.ws = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/ws');
-    this.opened = new Promise((res, rej) => { this.ws.onopen = res; this.ws.onerror = () => rej(new Error(label + ' ws error')); });
-    this.ws.onmessage = (e) => {
-      const m = JSON.parse(e.data); this.msgs.push(m);
+    this.label = label; this.timeoutMs = timeoutMs; this.msgs = []; this.state = null; this.joined = null; this.closed = false; this.waiters = []; this.gotos = 0;
+    this.wsBase = baseUrl.replace(/^http/, 'ws') + '/ws'; this.outbox = [];
+    this.opened = this.open('');
+  }
+  // Open a socket. On the Cloudflare host the first (entry) socket answers create/join/resume/public with {t:'goto', code, msg}:
+  // like the browser, reconnect to /ws?room=CODE and send msg there. The Node host never sends goto.
+  open(query) {
+    const ws = this.ws = new WebSocket(this.wsBase + query); this.closed = false;
+    const opened = new Promise((res, rej) => { ws.onopen = () => { this.outbox.splice(0).forEach((s) => ws.send(s)); res(); }; ws.onerror = () => rej(new Error(this.label + ' ws error')); });
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.t === 'goto') { this.gotos++; ws.onclose = null; ws.close(); this.outbox.push(JSON.stringify(m.msg)); this.open('?room=' + m.code); return; }
+      this.msgs.push(m);
       if (m.t === 'state') this.state = m; if (m.t === 'joined') this.joined = m;
       this.waiters = this.waiters.filter((w) => !w(m));
     };
-    this.ws.onclose = (e) => { this.closed = true; this.closeCode = e?.code; this.waiters = this.waiters.filter((w) => !w(null)); };
+    ws.onclose = (e) => { if (ws !== this.ws) return; this.closed = true; this.closeCode = e?.code; this.waiters = this.waiters.filter((w) => !w(null)); };
+    return opened;
   }
-  send(o) { this.ws.send(typeof o === 'string' ? o : JSON.stringify(o)); }
+  send(o) { const s = typeof o === 'string' ? o : JSON.stringify(o); if (this.ws.readyState === 1) this.ws.send(s); else this.outbox.push(s); }
   // Resolve with the first message (now or later) matching pred; reject on timeout.
   waitFor(pred, what, ms = this.timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -58,7 +67,8 @@ async function runScenario({ baseUrl, adminToken, timeoutMs = 20000 } = {}) {
   const mk = (label) => { const c = new Client(baseUrl, label, timeoutMs); clients.push(c); return c; };
   const auth = { authorization: 'Bearer ' + adminToken };
   const getJson = async (p, h = auth) => { const r = await fetch(baseUrl + p, { headers: h }); return { status: r.status, body: r.headers.get('content-type')?.includes('json') ? await r.json() : null, res: r }; };
-  const step = async (name, fn) => { try { await fn(); } catch (e) { check(name, false, e.message); } };
+  const skip = new Set((process.env.QA_SKIP || '').split(',').filter(Boolean)); // e.g. QA_SKIP=public when several runs share one host (the public queue is global)
+  const step = async (name, fn) => { if (skip.has(name)) return; try { await fn(); } catch (e) { check(name, false, e.message); } };
   const t0 = Date.now(); let version = null;
   try {
     // ---- HTTP basics, social preview, admin auth ----

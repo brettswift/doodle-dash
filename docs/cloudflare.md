@@ -1,22 +1,33 @@
-# Cloudflare adapter (step 5, local only)
+# Cloudflare adapter (steps 5 and 5b, local only)
 
-`cf/` runs the same game on Cloudflare Workers (free plan): one Worker, one SQLite-backed Durable Object (`GameHub`) and static assets.
+`cf/` runs the same game on Cloudflare Workers (free plan): one Worker, one `Directory` Durable Object, one `Room` Durable Object per room (all SQLite-backed) and static assets.
 Nothing here is deployed; step 6 deploys the dev Worker `crayon-breath-dev`. Production (Fly) is unchanged.
 
 ## Shape
-- `cf/src/worker.js`: public Worker. Serves the static allowlist with the same headers as `server.js` (assets via `run_worker_first`, `html_handling = "none"`), `/healthz`, `/version`, and forwards `/ws`, `/stats` and `/admin/*` to the hub. Strips client-supplied `x-hub-*` headers and sets trusted client IP/country/region.
-- `cf/src/hub.js`: `GameHub` Durable Object. Hosts all rooms in memory, the public lobby, analytics, history, tiers and the archive using the shared `game.js`, `core.js`, `session.js`, `analytics.js`. One object because the core services (topic reservation, history sequence, adaptive tiers) are synchronous and global, and rooms are capped at 100. The client protocol is unchanged.
-- `cf/src/do-store.js`: the Store interface (see `store.js`) over `ctx.storage.sql`, same schema (`schema.js`) plus a transient `rooms` table. Meters `rowsWritten`/`rowsRead` (shown under `health.storage` in `/admin/analytics.json`).
+- `cf/src/worker.js`: public Worker. Serves the static allowlist with the same headers as `server.js` (assets via `run_worker_first`, `html_handling = "none"`), `/healthz`, `/version`. Routes `/ws?room=CODE` to that room's `Room` object (`idFromName(CODE)`), plain `/ws`, `/stats` and `/admin/*` to the `Directory`. Strips client-supplied `x-hub-*` headers and sets trusted client IP/country/region.
+- `cf/src/room.js`: `Room` Durable Object. One live game (shared `game.js`/`core.js`/`session.js`), its hibernatable sockets, one snapshot row. The core stays synchronous: it reads a local cache of tiers and recently drawn topics and writes into an in-memory outbox. The outbox is sent to the Directory asynchronously, in numbered batches, retried until acknowledged (failed batches are persisted as `ob:` rows so eviction cannot lose them; an alarm retries).
+- `cf/src/directory.js`: `Directory` Durable Object. Everything global: entry sockets and the public lobby queue, room-code allocation and registry, history sequence and completed-turn history, adaptive tiers, analytics, best/worst archive, admin endpoints and export. `ingest(src, batch)` applies a Room's batch exactly once (batch numbers only increase per source; a repeat is a no-op) and returns the fresh tier/topic view that the Room caches.
+- `cf/src/room-services.js`: Room-side service port (`LocalHistory`, `Outbox`).
+- `cf/src/do-store.js`: the Store interface (see `store.js`) over `ctx.storage.sql`, same schema (`schema.js`); `DirectoryStore` adds `ingest` and `room_codes`; `RoomStore` is a key/value table. Meters `rowsWritten`/`rowsRead` (Directory plus all Rooms are summed under `health.storage` in `/admin/analytics.json`).
 - `session.js` (shared): per-socket protocol handling, used by both hosts so behavior cannot drift.
 
-## Durability (matches Fly today)
-Live room state is in memory. Persisted: completed drawing history, analytics events, adaptive tiers, best/worst archive at game end. Hibernation: sockets use the hibernation API; each socket's seat is its attachment; one snapshot row per room is written when phase, membership, host or chat length changes (not per stroke). A woken hub rebuilds rooms from those rows and re-binds sockets. Strokes drawn since the last snapshot can be lost on eviction (same class of loss as a Fly restart). The 250 ms tick runs only while a room is in a timed phase, so idle lobbies can hibernate; one alarm retires abandoned rooms.
+## Client protocol change (one message)
+Every connection starts at the Directory (`/ws`). `create`, `join`, `resume` and the public-lobby match are answered with `{t:'goto', code, msg}`; the client closes that socket, opens `/ws?room=CODE` and sends `msg` there. `msg` is the original message (create/join/resume) or `{t:'resume', code, token, pub:1}` for a public match, whose seats the Directory created in the Room up front. The Node host never sends `goto`; a saved session connects straight to `/ws?room=CODE` (the Node host ignores the parameter). Handled in `public/app.js` and `tools/qa-game.js`. The Room does not count a second `landing` event, and a public hand-over is not counted as a `resume` intent.
 
-## Known differences
-- The observed client IP (for same-name reconnect fallback) lives only in memory attachments, never SQL, and is lost on eviction; token resume still works.
-- Process CPU/memory metrics are `null` (unavailable on Workers).
-- Periodic analytics samples are taken while games run and on dashboard reads, not on a fixed 60 s timer.
+## Durability (matches Fly today)
+Live room state is in memory. Persisted: completed drawing history, analytics events, adaptive tiers, best/worst archive at game end (written by the Directory). Hibernation: sockets use the hibernation API; each socket's seat is its attachment; one snapshot row per room is written when phase, membership, host or chat length changes (not per stroke). A woken Room rebuilds from that row and re-binds sockets. Strokes drawn since the last snapshot can be lost on eviction (same class of loss as a Fly restart). The 250 ms tick runs only while a room is in a timed phase, so idle rooms hibernate; one alarm per Room covers outbox retry, the public-start deadline and idle retirement (retirement tells the Directory to drop the room code).
+Write budget, measured: a 2-player, 1-rotation game writes 18 SQL rows in total across Room and Directory (test `a full 2-player game writes well under 100 SQL rows`).
+
+## Known differences and limits
+- Topic non-repetition is exact inside a room. Across rooms it is best effort: a Room avoids what the Directory's view says was drawn recently, but two rooms can rarely be offered the same topic at the same moment (the Directory does not reserve topics). A Room also learns new tiers only with its next acknowledged write.
+- Adaptive tiers are decided by the Directory when it records a finished drawing (same `adapt.js`), never by a Room.
+- Public lobby: a Room is created and seated by the Directory; the game starts once every seat has connected, or after 10 s with at least two connected. A seat nobody claims stays in the room until it is retired as idle.
+- Room cap: the Node host keeps 100 rooms. The Directory allows 500 registered rooms (`MAX_ROOMS`): rooms no longer share one isolate's memory, and nothing else depended on 100.
+- Per-IP and total socket caps apply per object (Directory entry sockets, and per Room), not globally across rooms.
+- The observed client IP (same-name reconnect fallback) lives only in a Room's memory attachment, never SQL, and is lost on eviction; token resume still works.
+- Process CPU/memory metrics are `null`. There is no periodic analytics sampler (objects hibernate); a sample is taken on each dashboard read.
+- Directory reads up to 20000 history rows when it wakes; its wake frequency against the free-plan read budget is a step 6 measurement.
 
 ## Commands (from `cf/`)
-- `npm test`: Durable Object SQLite contract + Worker tests under workerd (vitest), then local `wrangler dev` runs the BASE_URL QA game client, a real hibernation check and a bundle check.
+- `npm test`: Durable Object SQLite contract, Worker, Room and Directory tests under workerd (vitest), then local `wrangler dev` runs the BASE_URL QA game client (also two games at once), a real Room hibernation check and a bundle check.
 - `npm run dry`: bundle dry-run, no network or credentials.

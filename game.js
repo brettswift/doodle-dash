@@ -92,6 +92,8 @@ class Game {
   restore(code, snapshot, now) {
     const r = new Room(code, now, this.ctx); r.state = core.decode(snapshot); this.rooms.set(code, r); return r;
   }
+  // Open a room under an externally allocated code (Cloudflare: the Directory allocates codes, one Room object hosts one room). No cap here.
+  open(code, now) { const r = new Room(code, now, this.ctx); this.rooms.set(code, r); return r; }
   get(code) { return this.rooms.get(String(code || '').toUpperCase()); }
   tick(now) {
     for (const [c, r] of this.rooms) {

@@ -1,6 +1,6 @@
 'use strict';
 // Transport-independent client session: one per connected socket. Used by both the Node host (server.js)
-// and the Cloudflare host (cf/src/hub.js) so the wire protocol cannot drift between runtimes.
+// and the Cloudflare host (cf/src/room.js, cf/src/directory.js) so the wire protocol cannot drift between runtimes.
 // The host supplies send(string), the observed public IP (or null), the coarse location and the shared services.
 const { NAME_RE } = require('./game');
 const { Matchmaker } = require('./lobby');
@@ -103,7 +103,7 @@ function createSession({ game, mm, analytics }, conn) {
     room = r; player = p;
     p.analytics = identity;
     analytics.event('nameEntered', { ...identity, name: p.name, mode: r.public ? 'public' : 'private' });
-    analytics.event('intent', { ...identity, mode: m.t === 'create' ? 'private-create' : m.t === 'join' ? 'private-join' : 'resume' });
+    if (!m.pub) analytics.event('intent', { ...identity, mode: m.t === 'create' ? 'private-create' : m.t === 'join' ? 'private-join' : 'resume' }); // pub: seat handed over by the public lobby, not a user intent
     send(JSON.stringify({ t: 'joined', code: r.code, id: p.id, token: p.token }));
     p.ip = observed;
     r.attach(p, send, now);
