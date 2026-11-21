@@ -201,7 +201,11 @@ function keepDrawing(s) {
   const d = drawerOf(s);
   if (!d || !s.word || !s.strokes.length) return;
   s.showcase.push({ name: d.name, word: s.word, tid: s.curTid, diff: s.diff, gain: d.gain, strokes: s.strokes });
-  if (s.showcase.length > 100) s.showcase.shift();
+  // Only the current best and worst can ever be shown, so keep just those two (in drawing order). Adding a drawing can only
+  // make the new one best, or replace the worst; the old best/worst always stay candidates, so the first-best / last-worst
+  // tie rules give the same answer as scanning every drawing. This also bounds snapshot size (at most two canvases).
+  const bw = bestWorst(s), keep = new Set([bw.best, bw.worst]);
+  s.showcase = s.showcase.filter((x) => keep.has(x));
 }
 
 // Anonymous per-drawing telemetry: no names/ids/IPs; times are ms since the drawing began.

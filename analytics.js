@@ -58,7 +58,8 @@ class Analytics {
     const now = Date.now(); // read view only: older rows stay in the database
     return this.store.events(now - 90 * DAY, now - 7 * DAY);
   }
-  summary(records = this.records()) {
+  // `waiting`: optional Set of private lobby ids known to be waiting right now (hosts whose rooms live outside this object, e.g. Cloudflare Rooms).
+  summary(records = this.records(), { waiting = null } = {}) {
     const now = Date.now(), recs = records.filter((x) => x.at > now - 90 * DAY && !x.qa && x.type !== 'operation');
     const games = new Map(), names = new Map(), modes = { public: { started: 0, ended: 0, configured: [], completed: [] }, private: { started: 0, ended: 0, configured: [], completed: [] } };
     for (const e of recs) {
@@ -77,7 +78,7 @@ class Analytics {
     const avg = (a) => a.length ? Math.round(a.reduce((s, n) => s + n, 0) / a.length * 10) / 10 : null;
     const lobbies = new Map();
     for (const e of recs) {
-      if (e.type === 'privateLobbyCreated') lobbies.set(e.lobbyId, { status: e.runId === this.runId ? 'waiting' : 'unknown' });
+      if (e.type === 'privateLobbyCreated') lobbies.set(e.lobbyId, { status: (waiting ? waiting.has(e.lobbyId) : e.runId === this.runId) ? 'waiting' : 'unknown' });
       if (e.type === 'gameStarted' && e.mode === 'private') { const x = lobbies.get(e.lobbyId || e.gameId); if (x) x.status = 'started'; }
       if (e.type === 'privateLobbyClosed') { const x = lobbies.get(e.lobbyId); if (x && x.status !== 'started') x.status = 'closed'; }
     }

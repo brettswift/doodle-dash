@@ -83,11 +83,13 @@ export class DirectoryStore extends DoStore {
 export class RoomStore {
   constructor(storage) {
     this.storage = storage; this.sql = storage.sql; this.rowsWritten = 0; this.rowsRead = 0;
-    this.sql.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;');
+    // Lazy table: constructing the store only reads, so an object that is never written to keeps no durable state.
+    this.ready = this.sql.exec("SELECT 1 x FROM sqlite_master WHERE type='table' AND name='kv'").toArray().length > 0;
   }
+  ensure() { if (!this.ready) { this.sql.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;'); this.ready = true; } }
   run(query, ...args) { const c = this.sql.exec(query, ...args); const rows = c.toArray(); this.rowsWritten += c.rowsWritten; this.rowsRead += c.rowsRead; return rows; }
-  get(k) { const r = this.run('SELECT v FROM kv WHERE k=?', k); return r.length ? r[0].v : null; }
-  set(k, v) { this.run('INSERT INTO kv(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', k, String(v)); }
-  del(k) { this.run('DELETE FROM kv WHERE k=?', k); }
-  keys(prefix) { return this.run('SELECT k FROM kv WHERE k>=? AND k<? ORDER BY k', prefix, prefix + '\uffff').map((r) => r.k); }
+  get(k) { if (!this.ready) return null; const r = this.run('SELECT v FROM kv WHERE k=?', k); return r.length ? r[0].v : null; }
+  set(k, v) { this.ensure(); this.run('INSERT INTO kv(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', k, String(v)); }
+  del(k) { if (!this.ready) return; this.run('DELETE FROM kv WHERE k=?', k); }
+  keys(prefix) { if (!this.ready) return []; return this.run('SELECT k FROM kv WHERE k>=? AND k<? ORDER BY k', prefix, prefix + '\uffff').map((r) => r.k); }
 }
