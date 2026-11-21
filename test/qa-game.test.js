@@ -11,7 +11,7 @@ const { spawn } = require('node:child_process');
 function boot(extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dd-qa-'));
   const env = { ...process.env, PORT: '0', DATA_DIR: dir, APP_ENV: 'qa', DOODLE_EXPORT_TOKEN: 'qa-token-test',
-    CHOOSE_MS: '400', DRAW_MS: '3000', RESULT_MS: '250', GRACE_MS: '500', LOBBY_FIRST_MS: '600', LOBBY_RESET_MS: '300', ...extraEnv };
+    CHOOSE_MS: '4000', DRAW_MS: '8000', RESULT_MS: '300', GRACE_MS: '500', LOBBY_FIRST_MS: '600', LOBBY_RESET_MS: '300', ...extraEnv };
   const port = 20000 + Math.floor(Math.random() * 20000);
   env.PORT = String(port);
   const child = spawn(process.execPath, ['server.js'], { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] });

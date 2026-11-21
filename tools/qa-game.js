@@ -19,7 +19,7 @@ class Client {
       if (m.t === 'state') this.state = m; if (m.t === 'joined') this.joined = m;
       this.waiters = this.waiters.filter((w) => !w(m));
     };
-    this.ws.onclose = () => { this.closed = true; this.waiters = this.waiters.filter((w) => !w(null)); };
+    this.ws.onclose = (e) => { this.closed = true; this.closeCode = e?.code; this.waiters = this.waiters.filter((w) => !w(null)); };
   }
   send(o) { this.ws.send(typeof o === 'string' ? o : JSON.stringify(o)); }
   // Resolve with the first message (now or later) matching pred; reject on timeout.
@@ -91,28 +91,28 @@ async function runScenario({ baseUrl, adminToken, timeoutMs = 20000 } = {}) {
       a.send({ t: 'rounds', n: 1 }); await a.waitState((s) => s.rotations === 1, 'rotations=1');
       a.send({ t: 'start' });
       const all = [a, b, c], byId = (id) => all.find((x) => x.joined.id === id);
-      const seenDrawers = [], gains = {}; let everyoneBonus = 0, wordLeak = false, scoreOk = true;
-      for (let turn = 0; turn < 3; turn++) {
-        const s = await a.waitState((x) => x.phase === 'choosing' && x.turn === turn + 1, `choosing turn ${turn + 1}`);
+      const seenDrawers = [], gains = {}; let everyoneBonus = 0, wordLeak = null, scoreOk = true;
+      // Event-driven and turn-numbered: scans the full message history, so a fast phase change or network latency never desyncs the script.
+      const at = (c, phase, turn, what) => c.waitFor((m) => m.t === 'state' && m.phase === phase && m.turn === turn, `${c.label} ${what || phase} turn ${turn}`);
+      for (let turn = 1; turn <= 3; turn++) {
+        const s = await at(a, 'choosing', turn);
         const drawer = byId(s.drawerId); seenDrawers.push(s.drawerId);
-        const dv = await drawer.waitState((x) => x.phase === 'choosing' && x.choices, 'drawer choices');
+        await drawer.waitFor((m) => m.t === 'state' && m.phase === 'choosing' && m.turn === turn && m.choices, 'drawer choices');
         drawer.send({ t: 'pick', i: 0 });
-        const dstate = await drawer.waitState((x) => x.phase === 'drawing' && x.word, 'drawing with word');
+        const dstate = await at(drawer, 'drawing', turn, 'drawing');
         const word = dstate.word;
-        for (const g of all) if (g !== drawer) { const gs = await g.waitState((x) => x.phase === 'drawing', 'guesser drawing'); if (gs.word) wordLeak = true; }
         drawer.send({ t: 'draw', s: true, c: '#000000', w: 6, p: [100, 100, 300, 300, 500, 200] });
         drawer.send({ t: 'draw', s: false, c: '#000000', w: 6, p: [600, 400, 800, 700] });
+        for (const g of all) if (g !== drawer) { const gs = await at(g, 'drawing', turn, 'guesser drawing'); if (gs.word) wordLeak = { turn, client: g.label }; }
         for (const g of all) if (g !== drawer) g.send({ t: 'guess', text: word });
-        const end = await a.waitState((x) => x.phase === 'roundEnd' || x.phase === 'gameOver', 'round end');
-        const sc = Object.fromEntries(end.players.map((p) => [p.name, p.gain]));
-        for (const p of end.players) { if (p.id === s.drawerId) { if (!(p.gain > 0)) scoreOk = false; } else if (!(p.gain >= 50)) scoreOk = false; gains[p.name] = (gains[p.name] || 0) + p.gain; }
-        if (a.msgs.some((m) => m.t === 'chat' && /Everyone got it/.test(m.m?.text ?? m.m?.msg ?? JSON.stringify(m.m)))) everyoneBonus++;
-        trace.push({ turn: turn + 1, diff: end.diff, drawerGain: Math.max(...end.players.filter((p) => p.id === s.drawerId).map((p) => p.gain)), phase: end.phase });
-        void sc;
+        const end = await a.waitFor((m) => m.t === 'state' && (m.phase === 'roundEnd' || m.phase === 'gameOver') && m.turn === turn, 'round end turn ' + turn);
+        for (const p of end.players) { if (p.id === s.drawerId) { if (!(p.gain > 0)) scoreOk = false; } else if (!(p.gain >= 50)) scoreOk = false; }
+        if (a.msgs.some((m) => m.t === 'chat' && JSON.stringify(m.m).includes('Everyone got it'))) everyoneBonus = Math.max(everyoneBonus, 1);
+        trace.push({ turn, diff: end.diff, drawerGain: end.players.find((p) => p.id === s.drawerId).gain, phase: end.phase });
       }
       const over = await a.waitState((x) => x.phase === 'gameOver', 'gameOver');
       check('private-game-completed', new Set(seenDrawers).size === 3 && over.rotation === 1, { rotation: over.rotation, drawers: seenDrawers.length });
-      check('word-secret-from-guessers', !wordLeak);
+      check('word-secret-from-guessers', !wordLeak, wordLeak);
       check('scores-and-everyone-bonus', scoreOk && everyoneBonus >= 1, { everyoneBonus });
       check('showcase', !!(over.showcase && over.showcase.best && over.showcase.worst && over.showcase.best.strokes.length > 0));
       // resume by token after dropping a socket
@@ -169,8 +169,8 @@ async function runScenario({ baseUrl, adminToken, timeoutMs = 20000 } = {}) {
       const u = new URL(baseUrl);
       check('bad-origin-403', (await rawUpgrade(baseUrl, { Origin: 'https://evil.example', Host: u.host })) === 403);
       const o = mk('OVER'); await o.opened; o.send('x'.repeat(5000)); await sleep(500);
-      let closed = o.closed; for (let i = 0; i < 20 && !closed; i++) { await sleep(100); closed = o.closed; }
-      check('oversize-closed', closed);
+      let closed = o.closed; for (let i = 0; i < 80 && !closed; i++) { await sleep(100); closed = o.closed; }
+      check('oversize-closed', closed, { closeCode: o.closeCode, readyState: o.ws.readyState });
       const n = mk('NAME'); await n.opened; n.send({ t: 'create', name: '<<bad name that is far too long>>' });
       check('bad-name-rejected', !!(await n.waitFor((m) => m.t === 'error', 'name error')));
       check('unknown-path-404', (await fetch(baseUrl + '/nope')).status === 404 && (await fetch(baseUrl + '/../server.js')).status === 404);
