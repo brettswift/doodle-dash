@@ -46,7 +46,7 @@ export class Room extends DurableObject {
     this.history = new LocalHistory(this.outbox);
     this.topics = makeRoomTopics(this.history);
     this.archive = { save: (meta, sel) => { if (sel && sel.best) this.outbox.addArchive(meta, sel); return Promise.resolve('queued'); } };
-    this.game = new Game({ store: null, analytics: this.analytics, onGameStart: (e) => { void this.notifier.sendGameStart(e); }, log: this.log });
+    this.game = new Game({ store: null, analytics: this.analytics, onGameStart: (e) => { void this.notifier.sendGameStart(e); }, onFeedback: (e) => { void this.notifier.sendFeedback(e); }, log: this.log });
     this.game.ctx = { ...this.game.ctx, history: this.history, topics: this.topics, adapt: NO_ADAPT, analytics: this.analytics, archive: this.archive };
     // Single-room facade for the shared session code: only this object's room exists, nothing can be created beyond the one the Directory allocated.
     this.facade = {

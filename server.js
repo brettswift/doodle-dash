@@ -51,7 +51,7 @@ function start(port, opts = {}) {
   const dataDir = opts.dataDir ?? process.env.DATA_DIR, store = openStore(dataDir, { log: (...a) => console.error('[doodle]', ...a) });
   const analytics = new Analytics({ store, enabled: opts.analyticsEnabled ?? process.env.NODE_ENV !== 'test', qa, log: (...a) => console.error('[doodle]', ...a) });
   const notifier = makeNotifier({ baseUrl: opts.ntfyBaseUrl ?? process.env.NTFY_BASE_URL, topic: opts.ntfyTopic ?? process.env.NTFY_TOPIC ?? 'crayon_breath', fetchImpl: opts.fetchImpl, enabled: !qa && (opts.alertsEnabled ?? process.env.NTFY_ALERTS_ENABLED === 'true'), log: (...a) => console.error('[doodle]', ...a) });
-  const game = new Game({ store, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, log: (...a) => console.error('[doodle]', ...a) });
+  const game = new Game({ store, analytics, onGameStart: (event) => { void notifier.sendGameStart(event); }, onFeedback: (event) => { void notifier.sendFeedback(event); }, log: (...a) => console.error('[doodle]', ...a) });
   const perIp = new Map();
   const maxPerIp = opts.maxPerIp ?? MAX_PER_IP;
   const maxSockets = opts.maxSockets ?? (+process.env.MAX_SOCKETS || MAX_SOCKETS);

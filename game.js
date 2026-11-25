@@ -79,7 +79,7 @@ for (const k of STATE_KEYS) {
 }
 
 class Game {
-  constructor(opts = {}) { this.rooms = new Map(); this.ctx = { ...makeCtx(opts), onGameStart: opts.onGameStart }; }
+  constructor(opts = {}) { this.rooms = new Map(); this.ctx = { ...makeCtx(opts), onGameStart: opts.onGameStart, onFeedback: opts.onFeedback }; }
   // graceful stop: close in-flight drawings as abandoned and persist state
   shutdown(now = Date.now()) { for (const r of this.rooms.values()) r.abort(now); this.ctx.history.close(); }  // store is closed by its owner (server) after shutdown
   create(now) {

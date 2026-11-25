@@ -11,6 +11,10 @@ function endpoint(base, topic) {
 function gameStartMessage({ mode, players, configuredRounds }) {
   return `${mode === 'public' ? 'automatic public lobby' : 'private lobby'} started: ${players} players, ${configuredRounds} rounds`;
 }
+function feedbackMessage({ mode, round, rounds, rating, text, players }) {
+  const head = `${mode === 'public' ? 'public' : 'private'} lobby, round ${round} of ${rounds}, ${players} players`;
+  return [head, rating ? `${rating}/5` : 'no rating', text ? `"${text}"` : ''].filter(Boolean).join(' · ');
+}
 function makeNotifier({ baseUrl, topic = 'crayon_breath', fetchImpl = globalThis.fetch, log = () => {}, enabled = true } = {}) {
   const url = enabled && endpoint(baseUrl, topic);
   const status = { sent: 0, failed: 0, lastSentAt: null, lastFailedAt: null, payload: 'aggregate-only' };
@@ -28,6 +32,18 @@ function makeNotifier({ baseUrl, topic = 'crayon_breath', fetchImpl = globalThis
     }
     status.failed++; status.lastFailedAt = Date.now(); return false;
   }
-  return { configured: !!url, status, sendGameStart };
+  async function sendFeedback(event) {
+    if (!url) return false;
+    const body = feedbackMessage(event);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      const response = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8', title: 'Crayon Breath feedback', tags: 'speech_balloon' }, body, signal: controller.signal });
+      if (response.ok) { status.sent++; status.lastSentAt = Date.now(); return true; }
+      log('ntfy feedback delivery failed', response.status);
+    } catch (error) { log('ntfy feedback delivery failed', error.name || 'error'); } finally { clearTimeout(timer); }
+    status.failed++; status.lastFailedAt = Date.now(); return false;
+  }
+  return { configured: !!url, status, sendGameStart, sendFeedback };
 }
-module.exports = { makeNotifier, gameStartMessage };
+module.exports = { makeNotifier, gameStartMessage, feedbackMessage };
