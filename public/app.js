@@ -81,11 +81,36 @@ function renderWait() {
     : `starting in... ${Math.max(0, Math.ceil((pub.remaining - (Date.now() - pub.at)) / 1000))}`;
 }
 setInterval(() => { if (pub) renderWait(); }, 200);
+// Optional feedback after each finished round: one tap rating plus optional comment; Skip always available.
+const fbKey = (code, r) => `cb-fb:${code}:${r}`;
+let fbRound = 0, fbRating = 0;
+function fbHide() { $('fbCard').hidden = true; fbRound = 0; fbRating = 0; }
+function fbSync(m) {
+  const r = m.completedRounds || 0;
+  if (m.phase === 'lobby' || !r || sessionStorage.getItem(fbKey(m.code, r))) return fbHide();
+  if (fbRound === r) return;
+  fbRound = r; fbRating = 0; $('fbText').value = ''; $('fbSend').disabled = true;
+  $('fbTitle').textContent = m.rotations > 1 ? `How was round ${r} of ${m.rotations}?` : 'How was that round?';
+  const box = $('fbStars'); box.replaceChildren();
+  for (let i = 1; i <= 5; i++) box.append(el('button', { type: 'button', textContent: String(i), ariaLabel: `${i} of 5`, ariaPressed: 'false', onclick: () => {
+    fbRating = i; $('fbSend').disabled = false; [...box.children].forEach((b, j) => b.setAttribute('aria-pressed', String(j < i)));
+  } }));
+  $('fbCard').hidden = false;
+}
+function fbDone(send) {
+  if (st && fbRound) { try { sessionStorage.setItem(fbKey(st.code, fbRound), '1'); } catch {} }
+  if (send && st && fbRound) ws_send_feedback();
+  fbHide();
+}
+function ws_send_feedback() { send({ t: 'feedback', round: fbRound, rating: fbRating, text: $('fbText').value.trim().slice(0, 200) }); }
+$('fbSkip').onclick = () => fbDone(false);
+$('fbCard').onsubmit = (e) => { e.preventDefault(); if (fbRating) fbDone(true); };
 function onState(m) {
   const prev = st;
   if (m.strokes) strokes = m.strokes; else if (prev) m.strokes = strokes;
   st = m; recvAt = Date.now();
   $('homeErr').textContent = ''; $('lobbyErr').textContent = ''; $('gameErr').textContent = '';
+  fbSync(m);
   if (m.phase === 'lobby') { show('lobby'); renderLobby(); return; }
   show('game'); renderGame(prev);
   if (m.strokes !== undefined && (!prev || prev.phase !== m.phase || prev.drawerId !== m.drawerId || prev.phase === 'lobby' || m.phase === 'choosing')) paintAll();
@@ -355,7 +380,7 @@ $('guessForm').addEventListener('submit', (e) => {
   if (t) send({ t: 'guess', text: t });
 });
 function leave() {
-  wantOpen = false; sess = null; saveSess(); st = null;
+  wantOpen = false; sess = null; saveSess(); st = null; fbHide();
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   show('home');
 }

@@ -4,7 +4,7 @@
 //   env.now      number, the logical time for this command
 //   env.clock    optional () => number used only for the "remaining" field of views (defaults to env.now)
 //   env.rng      { hex(bytes) -> string }, opaque id/token source
-//   env.svc      service port { topics, history, adapt, analytics, archive, onGameStart }; core calls it, never owns it
+//   env.svc      service port { topics, history, adapt, analytics, archive, onGameStart, onFeedback }; core calls it, never owns it
 // State is plain JSON-able data (no Sets, Maps, functions, sockets). step() updates the state it is given and
 // returns it together with an ordered list of outbound messages and the next absolute wake time.
 const { MULT10 } = require('./words');
@@ -62,7 +62,7 @@ function view(s, playerId, env, withStrokes = true) {
   const clock = env.clock ? env.clock() : env.now;
   const v = {
     t: 'state', code: s.code, you: playerId, hostId: s.hostId, phase: s.phase,
-    drawerId: s.drawerId, rotations: s.rotations, rotation: s.rotation,
+    drawerId: s.drawerId, rotations: s.rotations, rotation: s.rotation, completedRounds: s.completedRotations || 0,
     remaining: Math.max(0, s.deadline - clock),
     players: s.players.map((q) => ({ id: q.id, name: q.name, score: q.score, gain: q.gain, guessed: q.guessed, connected: !!q.connected })),
     chat: s.chat.slice(),
@@ -320,6 +320,18 @@ function clientMessage(s, p, m, env, out) {
       const w = Number.isInteger(m.i) && s.choices[m.i];
       if (!w) return err('Bad choice');
       return beginDrawing(s, w, env, out);
+    }
+    case 'feedback': {
+      // One optional answer per player per finished round. Never carries names, ids or codes outward.
+      const rating = Number.isInteger(m.rating) && m.rating >= 1 && m.rating <= 5 ? m.rating : 0;
+      const text = String(m.text ?? '').replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+      const round = m.round;
+      if (!Number.isInteger(round) || round < 1 || round > (s.completedRotations || 0) || (!rating && !text)) return;
+      const last = p.fb && p.fb.g === s.gid ? p.fb.r : 0;
+      if (round <= last) return;
+      p.fb = { g: s.gid, r: round };
+      svc.onFeedback?.({ gameId: s.gid, mode: mode(s), round, rounds: s.rotations, rating, text, players: s.players.length });
+      return;
     }
     case 'draw': return draw(s, p, m, out);
     case 'clear': {
